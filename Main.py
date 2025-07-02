@@ -105,10 +105,117 @@ VIOLATION_RULES = {
 
 # Streamlit App Configuration
 st.set_page_config(
-    page_title="S&P Compliance Analyzer",
-    page_icon="🔍",
+    page_title="hoichoi S&P Compliance Analyzer",
+    page_icon="🎬",
     layout="wide"
 )
+
+# Authentication Functions
+def check_email_domain(email: str) -> bool:
+    """Check if email belongs to hoichoi.tv domain"""
+    return email.lower().strip().endswith('@hoichoi.tv')
+
+def authenticate_user():
+    """Handle user authentication for hoichoi.tv employees only"""
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+    
+    if not st.session_state.authenticated:
+        # Custom CSS for login page
+        st.markdown("""
+        <style>
+        .login-header {
+            background: linear-gradient(90deg, #ff6b6b, #4ecdc4);
+            padding: 2rem;
+            border-radius: 15px;
+            color: white;
+            text-align: center;
+            margin-bottom: 2rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .login-container {
+            background: white;
+            padding: 2rem;
+            border-radius: 15px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            border: 1px solid #e0e0e0;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        st.markdown("""
+        <div class="login-header">
+            <h1>🎬 hoichoi S&P Compliance System</h1>
+            <h3>Standards & Practices Content Review Platform</h3>
+            <p>Secure access for hoichoi content team members</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        with st.container():
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                st.markdown('<div class="login-container">', unsafe_allow_html=True)
+                
+                st.subheader("🔐 Employee Access Portal")
+                st.write("Please login with your hoichoi corporate email address")
+                
+                email = st.text_input(
+                    "Corporate Email Address",
+                    placeholder="yourname@hoichoi.tv",
+                    help="Only @hoichoi.tv email addresses are authorized"
+                )
+                
+                password = st.text_input(
+                    "Password",
+                    type="password",
+                    help="Enter your corporate password"
+                )
+                
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("🚀 Login", type="primary", use_container_width=True):
+                        if email and password:
+                            if check_email_domain(email):
+                                # Simple password check (in production, use proper authentication)
+                                if len(password) >= 6:  # Basic password validation
+                                    st.session_state.authenticated = True
+                                    st.session_state.user_email = email
+                                    st.session_state.user_name = email.split('@')[0].replace('.', ' ').title()
+                                    st.session_state.is_admin = email.lower() in ['admin@hoichoi.tv', 'sp@hoichoi.tv', 'content@hoichoi.tv']
+                                    st.success("✅ Login successful! Redirecting...")
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error("❌ Password must be at least 6 characters long")
+                            else:
+                                st.error("❌ Access denied. Only @hoichoi.tv email addresses are authorized.")
+                                st.warning("This system is restricted to hoichoi content team members only.")
+                        else:
+                            st.error("❌ Please enter both email and password")
+                
+                with col_b:
+                    if st.button("ℹ️ Help", use_container_width=True):
+                        st.info("""
+                        **Need Access?**
+                        - Contact IT department for account setup
+                        - Must use corporate @hoichoi.tv email
+                        - For support: it@hoichoi.tv
+                        """)
+                
+                st.divider()
+                st.markdown("""
+                <div style='text-align: center; color: #666; font-size: 0.9em;'>
+                    <p>🔒 This is a secure system for hoichoi content review</p>
+                    <p>📧 Access restricted to @hoichoi.tv employees only</p>
+                    <p>🛡️ All activities are logged for security purposes</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+        
+        return False
+    
+    return True
 
 def get_api_key():
     """Get OpenAI API key from Streamlit secrets or user input"""
@@ -116,6 +223,74 @@ def get_api_key():
         return st.secrets.get("OPENAI_API_KEY", None)
     except:
         return None
+
+def detect_language(text_sample):
+    """Detect the primary language of the text using AI"""
+    api_key = get_api_key()
+    if not OPENAI_AVAILABLE or not api_key:
+        return "English"
+    
+    try:
+        client = OpenAI(api_key=api_key)
+        
+        # Take a sample of the text for language detection
+        sample = text_sample[:1000] if len(text_sample) > 1000 else text_sample
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a language detection expert. Identify the primary language of the given text. Return only the language name in English (e.g., 'Hindi', 'Bengali', 'Tamil', 'English', etc.)."},
+                {"role": "user", "content": f"What language is this text primarily written in? Text: {sample}"}
+            ],
+            max_tokens=10,
+            temperature=0
+        )
+        
+        detected_language = response.choices[0].message.content.strip()
+        return detected_language
+        
+    except:
+        return "English"  # Default fallback
+
+def generate_ai_solution(violation_text, violation_type, explanation, detected_language, api_key):
+    """Generate AI solution for the violation in the detected language"""
+    if not OPENAI_AVAILABLE or not api_key:
+        return "AI solution generation not available"
+    
+    try:
+        client = OpenAI(api_key=api_key)
+        
+        prompt = f"""You are an expert content editor for Indian digital media. Generate a revised version of the problematic content that resolves the S&P violation while maintaining the creative intent.
+
+VIOLATION DETAILS:
+- Type: {violation_type}
+- Problematic Text: "{violation_text}"
+- Issue: {explanation}
+- Content Language: {detected_language}
+
+INSTRUCTIONS:
+1. Provide a revised version that eliminates the S&P violation
+2. Maintain the original tone and creative intent
+3. Keep the same language as the original content ({detected_language})
+4. Ensure the solution is culturally appropriate for Indian audiences
+5. Make minimal changes while fixing the compliance issue
+
+Return ONLY the revised text solution, nothing else."""
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are an expert content editor specializing in S&P compliance for Indian digital media."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=200,
+            temperature=0.3
+        )
+        
+        return response.choices[0].message.content.strip()
+        
+    except Exception as e:
+        return f"Error generating solution: {str(e)}"
 
 def extract_text_from_docx_bytes(file_bytes):
     """Extract text from uploaded DOCX file bytes"""
@@ -309,9 +484,13 @@ def find_page_number(violation_text, pages_data):
     return 1
 
 def analyze_document(text, pages_data, api_key):
-    """Analyze entire document"""
+    """Analyze entire document with AI solutions"""
     if not text or not api_key:
         return {"violations": [], "summary": {}}
+    
+    # Detect language first
+    detected_language = detect_language(text)
+    st.info(f"🌐 Detected content language: **{detected_language}**")
     
     chunks = chunk_text(text)
     all_violations = []
@@ -332,8 +511,25 @@ def analyze_document(text, pages_data, api_key):
             for violation in analysis['violations']:
                 violation['pageNumber'] = find_page_number(violation.get('violationText', ''), pages_data)
                 violation['chunkNumber'] = i + 1
+                violation['detectedLanguage'] = detected_language
                 all_violations.append(violation)
             successful_chunks += 1
+    
+    # Generate AI solutions for violations
+    if all_violations:
+        status_text.text("🤖 Generating AI solutions...")
+        for i, violation in enumerate(all_violations):
+            progress = (i + 1) / len(all_violations)
+            progress_bar.progress(progress)
+            
+            ai_solution = generate_ai_solution(
+                violation.get('violationText', ''),
+                violation.get('violationType', ''),
+                violation.get('explanation', ''),
+                detected_language,
+                api_key
+            )
+            violation['aiSolution'] = ai_solution
     
     progress_bar.progress(1.0)
     status_text.text("✅ Analysis complete!")
@@ -358,6 +554,7 @@ def analyze_document(text, pages_data, api_key):
     
     return {
         "violations": unique_violations,
+        "detectedLanguage": detected_language,
         "summary": {
             "totalViolations": len(unique_violations),
             "totalPages": len(pages_data),
@@ -368,7 +565,7 @@ def analyze_document(text, pages_data, api_key):
     }
 
 def generate_excel_report(violations, filename):
-    """Generate Excel report"""
+    """Generate Excel report with AI solutions"""
     if not EXCEL_AVAILABLE:
         return None
     
@@ -401,7 +598,7 @@ def generate_excel_report(violations, filename):
         return None
 
 def generate_violations_report_pdf(violations, filename):
-    """Generate PDF report with violation details"""
+    """Generate PDF report with violation details and AI solutions"""
     if not PDF_AVAILABLE:
         return None
     
@@ -422,10 +619,13 @@ def generate_violations_report_pdf(violations, filename):
             alignment=1
         )
         
-        story.append(Paragraph("S&P COMPLIANCE VIOLATION REPORT", title_style))
+        story.append(Paragraph("hoichoi S&P COMPLIANCE VIOLATION REPORT", title_style))
         story.append(Paragraph(f"Document: {filename}", styles['Normal']))
         story.append(Paragraph(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
+        story.append(Paragraph(f"Reviewed by: {st.session_state.get('user_name', 'Unknown')}", styles['Normal']))
         story.append(Paragraph(f"Total Violations: {len(violations)}", styles['Normal']))
+        if violations:
+            story.append(Paragraph(f"Content Language: {violations[0].get('detectedLanguage', 'Unknown')}", styles['Normal']))
         story.append(Spacer(1, 20))
         
         # Summary by severity
@@ -444,8 +644,8 @@ def generate_violations_report_pdf(violations, filename):
         
         story.append(Spacer(1, 20))
         
-        # Detailed violations
-        story.append(Paragraph("DETAILED VIOLATIONS", styles['Heading1']))
+        # Detailed violations with AI solutions
+        story.append(Paragraph("DETAILED VIOLATIONS WITH AI SOLUTIONS", styles['Heading1']))
         story.append(Spacer(1, 10))
         
         for i, violation in enumerate(violations, 1):
@@ -472,6 +672,7 @@ def generate_violations_report_pdf(violations, filename):
             violation_detail += f"<b>Violation Text:</b><br/><font color='red'><b>{violation.get('violationText', 'N/A')}</b></font><br/>"
             violation_detail += f"<b>Explanation:</b> {violation.get('explanation', 'N/A')}<br/>"
             violation_detail += f"<b>Suggested Action:</b> {violation.get('suggestedAction', 'N/A')}<br/>"
+            violation_detail += f"<b>🤖 AI Solution ({violation.get('detectedLanguage', 'Unknown')}):</b><br/><font color='green'><b>{violation.get('aiSolution', 'N/A')}</b></font><br/>"
             violation_detail += f"<b>Status:</b> <font color='red'>PENDING REVIEW</font>"
             
             story.append(Paragraph(violation_detail, violation_style))
@@ -506,8 +707,9 @@ def generate_highlighted_text_pdf(text, violations, filename):
             alignment=1
         )
         
-        story.append(Paragraph("S&P COMPLIANCE - HIGHLIGHTED TEXT", title_style))
+        story.append(Paragraph("hoichoi S&P COMPLIANCE - HIGHLIGHTED TEXT", title_style))
         story.append(Paragraph(f"Document: {filename}", styles['Normal']))
+        story.append(Paragraph(f"Reviewed by: {st.session_state.get('user_name', 'Unknown')}", styles['Normal']))
         story.append(Paragraph(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
         story.append(Spacer(1, 20))
         
@@ -607,6 +809,254 @@ def generate_highlighted_text_pdf(text, violations, filename):
         st.error(f"Error generating highlighted text PDF: {e}")
         return None
 
+def generate_full_document_pdf(text, violations, filename):
+    """Generate PDF that converts the entire document with color-coded highlighting"""
+    if not PDF_AVAILABLE:
+        return None
+    
+    try:
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
+        
+        styles = getSampleStyleSheet()
+        story = []
+        
+        # Title page
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Title'],
+            fontSize=20,
+            spaceAfter=30,
+            textColor=Color(0.2, 0.2, 0.6),
+            alignment=1
+        )
+        
+        story.append(Paragraph("hoichoi CONTENT DOCUMENT", title_style))
+        story.append(Paragraph("S&P Compliance Version with Highlighted Violations", styles['Heading2']))
+        story.append(Spacer(1, 20))
+        
+        # Document info
+        info_style = ParagraphStyle(
+            'DocInfo',
+            parent=styles['Normal'],
+            fontSize=12,
+            leftIndent=20,
+            spaceBefore=6,
+            spaceAfter=6
+        )
+        
+        story.append(Paragraph(f"<b>Original Document:</b> {filename}", info_style))
+        story.append(Paragraph(f"<b>Reviewed by:</b> {st.session_state.get('user_name', 'Unknown')} ({st.session_state.get('user_email', 'unknown@hoichoi.tv')})", info_style))
+        story.append(Paragraph(f"<b>Review Date:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", info_style))
+        story.append(Paragraph(f"<b>Total Violations Found:</b> {len(violations)}", info_style))
+        
+        if violations:
+            story.append(Paragraph(f"<b>Content Language:</b> {violations[0].get('detectedLanguage', 'Unknown')}", info_style))
+        
+        story.append(Spacer(1, 30))
+        
+        # Violation summary
+        story.append(Paragraph("VIOLATION SUMMARY", styles['Heading2']))
+        severity_counts = {}
+        for v in violations:
+            severity = v.get('severity', 'medium')
+            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+        
+        for severity in ['critical', 'high', 'medium', 'low']:
+            count = severity_counts.get(severity, 0)
+            if count > 0:
+                color = "red" if severity == 'critical' else "orange" if severity == 'high' else "#B8860B" if severity == 'medium' else "purple"
+                story.append(Paragraph(f"• <font color='{color}'><b>{severity.upper()}: {count} violations</b></font>", styles['Normal']))
+        
+        story.append(PageBreak())
+        
+        # Color legend
+        story.append(Paragraph("HIGHLIGHTING LEGEND", styles['Heading2']))
+        legend_text = """
+        This document contains the original content with S&P violations highlighted:<br/><br/>
+        🔴 <b>Red highlighting</b> = Critical violations (immediate attention required)<br/>
+        🟠 <b>Orange highlighting</b> = High severity violations (high priority review)<br/>
+        🟡 <b>Yellow highlighting</b> = Medium severity violations (standard review)<br/>
+        🟣 <b>Purple highlighting</b> = Low severity violations (minor issues)<br/><br/>
+        <b>All highlighted text represents content that violates hoichoi S&P standards.</b>
+        """
+        story.append(Paragraph(legend_text, styles['Normal']))
+        story.append(PageBreak())
+        
+        # Create violation mapping for highlighting
+        violation_map = {}
+        for violation in violations:
+            v_text = violation.get('violationText', '').strip()
+            severity = violation.get('severity', 'medium').lower()
+            
+            if v_text and len(v_text) >= 10:
+                violation_map[v_text] = {
+                    'severity': severity,
+                    'type': violation.get('violationType', 'Unknown'),
+                    'aiSolution': violation.get('aiSolution', 'No solution available')
+                }
+        
+        # Process and convert the entire document
+        story.append(Paragraph("COMPLETE DOCUMENT WITH HIGHLIGHTED VIOLATIONS", styles['Heading1']))
+        story.append(Spacer(1, 15))
+        
+        # Create styles for different violation severities
+        critical_style = ParagraphStyle(
+            'Critical',
+            parent=styles['Normal'],
+            backColor=Color(1, 0.8, 0.8),  # Light red
+            borderColor=red,
+            borderWidth=1,
+            spaceBefore=4,
+            spaceAfter=4
+        )
+        
+        high_style = ParagraphStyle(
+            'High',
+            parent=styles['Normal'],
+            backColor=Color(1, 0.9, 0.8),  # Light orange
+            borderColor=orange,
+            borderWidth=1,
+            spaceBefore=4,
+            spaceAfter=4
+        )
+        
+        medium_style = ParagraphStyle(
+            'Medium',
+            parent=styles['Normal'],
+            backColor=Color(1, 1, 0.8),  # Light yellow
+            borderColor=Color(0.7, 0.7, 0),
+            borderWidth=1,
+            spaceBefore=4,
+            spaceAfter=4
+        )
+        
+        low_style = ParagraphStyle(
+            'Low',
+            parent=styles['Normal'],
+            backColor=Color(0.95, 0.9, 0.95),  # Light purple
+            borderColor=Color(0.5, 0, 0.5),
+            borderWidth=1,
+            spaceBefore=4,
+            spaceAfter=4
+        )
+        
+        # Process the text paragraph by paragraph
+        paragraphs = text.split('\n')
+        current_page = 1
+        
+        for para_text in paragraphs:
+            if para_text.strip():
+                # Check for page markers
+                if '=== PAGE' in para_text:
+                    page_match = re.search(r'=== PAGE (\d+) ===', para_text)
+                    if page_match:
+                        current_page = int(page_match.group(1))
+                        # Add page marker
+                        page_style = ParagraphStyle(
+                            'PageMarker',
+                            parent=styles['Heading3'],
+                            textColor=Color(0.5, 0.5, 0.5),
+                            alignment=1,
+                            spaceBefore=20,
+                            spaceAfter=10
+                        )
+                        story.append(Paragraph(f"— Page {current_page} —", page_style))
+                    continue
+                
+                # Check for violations in this paragraph
+                has_violation = False
+                highlighted_text = para_text
+                paragraph_severity = 'normal'
+                
+                # Sort violations by length (longest first) to avoid overlapping replacements
+                sorted_violations = sorted(violation_map.items(), key=lambda x: len(x[0]), reverse=True)
+                
+                for v_text, v_info in sorted_violations:
+                    if v_text in highlighted_text:
+                        severity = v_info['severity']
+                        
+                        # Track the highest severity in this paragraph
+                        severity_rank = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1}
+                        if severity_rank.get(severity, 0) > severity_rank.get(paragraph_severity, 0):
+                            paragraph_severity = severity
+                        
+                        # Escape XML characters
+                        safe_v_text = v_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                        
+                        # Replace with bold red version for violations
+                        highlighted_replacement = f'<font color="red"><b>{safe_v_text}</b></font>'
+                        highlighted_text = highlighted_text.replace(v_text, highlighted_replacement)
+                        has_violation = True
+                
+                # Choose appropriate style based on violations
+                if has_violation:
+                    if paragraph_severity == 'critical':
+                        para_style = critical_style
+                    elif paragraph_severity == 'high':
+                        para_style = high_style
+                    elif paragraph_severity == 'medium':
+                        para_style = medium_style
+                    else:
+                        para_style = low_style
+                else:
+                    para_style = styles['Normal']
+                
+                # Add the paragraph
+                if len(highlighted_text) > 1000:  # Handle very long paragraphs
+                    # Split long paragraphs
+                    sentences = highlighted_text.split('. ')
+                    current_chunk = ""
+                    for sentence in sentences:
+                        if len(current_chunk + sentence) > 800:
+                            if current_chunk:
+                                story.append(Paragraph(current_chunk.strip(), para_style))
+                                story.append(Spacer(1, 6))
+                            current_chunk = sentence + ". "
+                        else:
+                            current_chunk += sentence + ". "
+                    
+                    if current_chunk.strip():
+                        story.append(Paragraph(current_chunk.strip(), para_style))
+                else:
+                    story.append(Paragraph(highlighted_text, para_style))
+                
+                story.append(Spacer(1, 6))
+        
+        # Add violations index at the end
+        if violations:
+            story.append(PageBreak())
+            story.append(Paragraph("VIOLATIONS INDEX WITH AI SOLUTIONS", styles['Heading1']))
+            story.append(Spacer(1, 15))
+            
+            for i, violation in enumerate(violations, 1):
+                index_style = ParagraphStyle(
+                    f'Index{i}',
+                    parent=styles['Normal'],
+                    leftIndent=20,
+                    rightIndent=20,
+                    spaceBefore=8,
+                    spaceAfter=8,
+                    borderWidth=1,
+                    borderColor=Color(0.7, 0.7, 0.7),
+                    backColor=Color(0.98, 0.98, 0.98)
+                )
+                
+                index_text = f"<b>#{i} - {violation.get('violationType', 'Unknown')} (Page {violation.get('pageNumber', 'N/A')})</b><br/>"
+                index_text += f"<font color='red'><b>Violation:</b> {violation.get('violationText', 'N/A')}</font><br/>"
+                index_text += f"<b>Issue:</b> {violation.get('explanation', 'N/A')}<br/>"
+                index_text += f"<font color='green'><b>🤖 AI Solution:</b> {violation.get('aiSolution', 'N/A')}</font>"
+                
+                story.append(Paragraph(index_text, index_style))
+        
+        doc.build(story)
+        buffer.seek(0)
+        return buffer.getvalue()
+        
+    except Exception as e:
+        st.error(f"Error generating full document PDF: {e}")
+        return None
+
 def create_violation_charts(violations):
     """Create visualization charts"""
     if not violations:
@@ -639,12 +1089,52 @@ def create_violation_charts(violations):
     return fig_severity, fig_types
 
 def main():
-    # Header
-    st.title("🔍 S&P Compliance Analyzer")
-    st.markdown("**Standards & Practices Compliance Checker for Digital Media**")
+    # Authentication check
+    if not authenticate_user():
+        return
     
-    # System status in sidebar
+    # Custom CSS for authenticated app
+    st.markdown("""
+    <style>
+    .main-header {
+        background: linear-gradient(90deg, #ff6b6b, #4ecdc4);
+        padding: 1.5rem;
+        border-radius: 15px;
+        color: white;
+        text-align: center;
+        margin-bottom: 2rem;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .user-info {
+        background: #f8f9fa;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 4px solid #007bff;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Header with user info
+    st.markdown("""
+    <div class="main-header">
+        <h1>🎬 hoichoi S&P Compliance Analyzer</h1>
+        <p>Standards & Practices Content Review Platform</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Sidebar with user info and system status
     with st.sidebar:
+        st.markdown(f"""
+        <div class="user-info">
+            <h3>👤 User Information</h3>
+            <p><b>Name:</b> {st.session_state.get('user_name', 'Unknown')}</p>
+            <p><b>Email:</b> {st.session_state.get('user_email', 'unknown@hoichoi.tv')}</p>
+            <p><b>Role:</b> {'Admin' if st.session_state.get('is_admin', False) else 'Content Reviewer'}</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.divider()
+        
         st.header("🔧 System Status")
         if OPENAI_AVAILABLE:
             st.success("✅ OpenAI: Available")
@@ -665,8 +1155,15 @@ def main():
             st.success("✅ PDF Generation: Available")
         else:
             st.error("❌ PDF Generation: Missing")
+        
+        st.divider()
+        
+        if st.button("🚪 Logout", type="secondary"):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.rerun()
     
-    # API Key
+    # API Key check
     api_key = get_api_key()
     
     if not api_key:
@@ -709,6 +1206,7 @@ def main():
                 
                 violations = analysis.get('violations', [])
                 summary = analysis.get('summary', {})
+                detected_language = analysis.get('detectedLanguage', 'Unknown')
                 
                 # Results
                 st.header("📊 Analysis Results")
@@ -738,8 +1236,8 @@ def main():
                         if fig_types:
                             st.plotly_chart(fig_types, use_container_width=True)
                     
-                    # Violation details
-                    st.subheader(f"🚨 Violations Found: {len(violations)}")
+                    # Violation details with AI solutions
+                    st.subheader(f"🚨 Violations with AI Solutions ({detected_language})")
                     
                     for i, violation in enumerate(violations[:10]):  # Show first 10
                         severity = violation.get('severity', 'low')
@@ -753,32 +1251,41 @@ def main():
                         else:
                             st.success(f"🟢 **{violation.get('violationType', 'Unknown')}** (Page {violation.get('pageNumber', 'N/A')})")
                         
-                        st.write(f"**Violated Text:** \"{violation.get('violationText', 'N/A')[:200]}...\"")
-                        st.write(f"**Issue:** {violation.get('explanation', 'N/A')}")
-                        st.write(f"**Action:** {violation.get('suggestedAction', 'N/A')}")
+                        col_a, col_b = st.columns([1, 1])
+                        with col_a:
+                            st.write("**🚨 Violated Text:**")
+                            st.markdown(f'<div style="background-color: #ffebee; padding: 10px; border-radius: 5px; border-left: 3px solid red;"><b style="color: red;">"{violation.get("violationText", "N/A")[:200]}..."</b></div>', unsafe_allow_html=True)
+                            st.write(f"**Issue:** {violation.get('explanation', 'N/A')}")
+                        
+                        with col_b:
+                            st.write(f"**🤖 AI Solution ({detected_language}):**")
+                            st.markdown(f'<div style="background-color: #e8f5e8; padding: 10px; border-radius: 5px; border-left: 3px solid green;"><b style="color: green;">"{violation.get("aiSolution", "N/A")}"</b></div>', unsafe_allow_html=True)
+                            st.write(f"**Action:** {violation.get('suggestedAction', 'N/A')}")
+                        
                         st.divider()
                     
                     if len(violations) > 10:
                         st.info(f"Showing first 10 of {len(violations)} total violations")
                     
                     # Generate all reports
-                    st.subheader("📥 Download Reports")
+                    st.subheader("📥 Download Reports (4 Files)")
                     
-                    with st.spinner("Generating reports..."):
+                    with st.spinner("Generating all reports..."):
                         # Excel report
                         excel_data = generate_excel_report(violations, uploaded_file.name)
                         
                         # PDF reports
                         violations_report_pdf = generate_violations_report_pdf(violations, uploaded_file.name)
                         highlighted_text_pdf = generate_highlighted_text_pdf(text, violations, uploaded_file.name)
+                        full_document_pdf = generate_full_document_pdf(text, violations, uploaded_file.name)
                     
                     # Download buttons
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2, col3, col4 = st.columns(4)
                     
                     with col1:
                         if excel_data:
                             st.download_button(
-                                label="📊 Download Excel Report",
+                                label="📊 Excel Report",
                                 data=excel_data,
                                 file_name=f"{uploaded_file.name}_analysis.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -788,9 +1295,9 @@ def main():
                     with col2:
                         if violations_report_pdf:
                             st.download_button(
-                                label="📋 Download Violations Report PDF",
+                                label="📋 Violations Report",
                                 data=violations_report_pdf,
-                                file_name=f"{uploaded_file.name}_violations_report.pdf",
+                                file_name=f"{uploaded_file.name}_violations.pdf",
                                 mime="application/pdf",
                                 use_container_width=True
                             )
@@ -798,18 +1305,31 @@ def main():
                     with col3:
                         if highlighted_text_pdf:
                             st.download_button(
-                                label="🎨 Download Highlighted Text PDF",
+                                label="🎨 Highlighted Text",
                                 data=highlighted_text_pdf,
-                                file_name=f"{uploaded_file.name}_highlighted_text.pdf",
+                                file_name=f"{uploaded_file.name}_highlighted.pdf",
                                 mime="application/pdf",
                                 use_container_width=True
                             )
                     
-                    if not all([excel_data, violations_report_pdf, highlighted_text_pdf]):
+                    with col4:
+                        if full_document_pdf:
+                            st.download_button(
+                                label="📄 Full Document PDF",
+                                data=full_document_pdf,
+                                file_name=f"{uploaded_file.name}_full_document.pdf",
+                                mime="application/pdf",
+                                use_container_width=True
+                            )
+                    
+                    st.info("📋 **Reports Generated:** Excel spreadsheet, Violations summary, Highlighted text, and Full document conversion")
+                    
+                    if not all([excel_data, violations_report_pdf, highlighted_text_pdf, full_document_pdf]):
                         st.warning("⚠️ Some reports could not be generated. Check system status in sidebar.")
                 
                 else:
                     st.success("🎉 No violations found! Content appears to comply with S&P standards.")
+                    st.balloons()
     
     with tab2:
         st.header("📝 Paste Text Analysis")
@@ -829,15 +1349,16 @@ def main():
             analysis = analyze_document(text_input, pages_data, api_key)
             
             violations = analysis.get('violations', [])
+            detected_language = analysis.get('detectedLanguage', 'Unknown')
             
             # Results for pasted text
-            st.header("📊 Analysis Results")
+            st.header(f"📊 Analysis Results ({detected_language})")
             
             if violations:
                 st.error(f"🚨 Found {len(violations)} violations in your text!")
                 
-                # Show violations with exact context
-                st.subheader("🔍 Violated Strings with Context")
+                # Show violations with exact context and AI solutions
+                st.subheader("🔍 Violated Strings with AI Solutions")
                 
                 for i, violation in enumerate(violations, 1):
                     severity = violation.get('severity', 'low')
@@ -852,37 +1373,39 @@ def main():
                     else:
                         st.success(f"**🟢 Violation #{i}: {violation.get('violationType', 'Unknown')}**")
                     
-                    # Show violated text with highlighting
+                    # Show violated text with highlighting and AI solution
                     violated_text = violation.get('violationText', '')
+                    ai_solution = violation.get('aiSolution', 'No solution available')
                     
-                    # Create highlighted version of the original text
-                    highlighted_context = text_input
-                    if violated_text in highlighted_context:
-                        if severity == 'critical':
-                            color = "#ffcdd2"
-                        elif severity == 'high':
-                            color = "#fff3e0"
-                        elif severity == 'medium':
-                            color = "#fffde7"
-                        else:
-                            color = "#f3e5f5"
+                    col_a, col_b = st.columns([1, 1])
+                    
+                    with col_a:
+                        st.markdown("**🚨 Violated Text:**")
+                        # Create highlighted version
+                        highlighted_context = text_input
+                        if violated_text in highlighted_context:
+                            if severity == 'critical':
+                                color = "#ffcdd2"
+                            elif severity == 'high':
+                                color = "#fff3e0"
+                            elif severity == 'medium':
+                                color = "#fffde7"
+                            else:
+                                color = "#f3e5f5"
+                            
+                            highlighted_context = highlighted_context.replace(
+                                violated_text,
+                                f'<span style="background-color: {color}; padding: 2px 4px; border-radius: 3px; font-weight: bold; color: red;">{violated_text}</span>'
+                            )
                         
-                        # Highlight the violated text
-                        highlighted_context = highlighted_context.replace(
-                            violated_text,
-                            f'<span style="background-color: {color}; padding: 2px 4px; border-radius: 3px; font-weight: bold; color: red;">{violated_text}</span>'
-                        )
+                        st.markdown(f'<div style="background-color: #fafafa; padding: 10px; border-radius: 5px; max-height: 200px; overflow-y: auto; border-left: 3px solid red;">{highlighted_context}</div>', unsafe_allow_html=True)
+                        st.markdown(f"**Why this violates S&P:** {violation.get('explanation', 'N/A')}")
                     
-                    # Show context around violation
-                    st.markdown("**Violated Text:**")
-                    st.markdown(f'<div style="background-color: #fafafa; padding: 10px; border-radius: 5px; border-left: 3px solid red;"><b style="color: red;">"{violated_text}"</b></div>', unsafe_allow_html=True)
-                    
-                    st.markdown("**Context in Original Text:**")
-                    st.markdown(f'<div style="background-color: #fafafa; padding: 10px; border-radius: 5px; max-height: 200px; overflow-y: auto;">{highlighted_context}</div>', unsafe_allow_html=True)
-                    
-                    st.markdown(f"**Why this violates S&P standards:** {violation.get('explanation', 'N/A')}")
-                    st.markdown(f"**Suggested action:** {violation.get('suggestedAction', 'N/A')}")
-                    st.markdown(f"**Severity:** {severity.upper()}")
+                    with col_b:
+                        st.markdown(f"**🤖 AI Solution ({detected_language}):**")
+                        st.markdown(f'<div style="background-color: #e8f5e8; padding: 10px; border-radius: 5px; border-left: 3px solid green;"><b style="color: green;">"{ai_solution}"</b></div>', unsafe_allow_html=True)
+                        st.markdown(f"**Suggested action:** {violation.get('suggestedAction', 'N/A')}")
+                        st.markdown(f"**Severity:** {severity.upper()}")
                     
                     st.divider()
                 
@@ -921,6 +1444,15 @@ def main():
             st.write(rule_data['description'])
             st.write(f"**Keywords:** {', '.join(rule_data['keywords'])}")
             st.divider()
+    
+    # Footer
+    st.markdown("---")
+    st.markdown(f"""
+    <div style='text-align: center; color: #666; font-size: 0.9em;'>
+        <p>🎬 hoichoi S&P Compliance System | Reviewed by: {st.session_state.get('user_name', 'Unknown')}</p>
+        <p>🔒 Secure access for authorized personnel only | Session logged for security</p>
+    </div>
+    """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
