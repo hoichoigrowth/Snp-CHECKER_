@@ -31,6 +31,17 @@ try:
 except ImportError:
     EXCEL_AVAILABLE = False
 
+try:
+    from reportlab.lib.pagesizes import letter, A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.colors import Color, red, orange, yellow, lightgrey, black
+    from reportlab.lib.units import inch
+    from reportlab.platypus.flowables import KeepTogether
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
+
 # Configuration
 MAX_CHARS_PER_CHUNK = 4000
 OVERLAP_CHARS = 200
@@ -102,7 +113,7 @@ st.set_page_config(
 def get_api_key():
     """Get OpenAI API key from Streamlit secrets or user input"""
     try:
-        return st.secrets["OPENAI_API_KEY"]
+        return st.secrets.get("OPENAI_API_KEY", None)
     except:
         return None
 
@@ -389,6 +400,213 @@ def generate_excel_report(violations, filename):
         st.error(f"Error generating Excel report: {e}")
         return None
 
+def generate_violations_report_pdf(violations, filename):
+    """Generate PDF report with violation details"""
+    if not PDF_AVAILABLE:
+        return None
+    
+    try:
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
+        
+        styles = getSampleStyleSheet()
+        story = []
+        
+        # Title
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Title'],
+            fontSize=18,
+            spaceAfter=30,
+            textColor=Color(0.2, 0.2, 0.6),
+            alignment=1
+        )
+        
+        story.append(Paragraph("S&P COMPLIANCE VIOLATION REPORT", title_style))
+        story.append(Paragraph(f"Document: {filename}", styles['Normal']))
+        story.append(Paragraph(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
+        story.append(Paragraph(f"Total Violations: {len(violations)}", styles['Normal']))
+        story.append(Spacer(1, 20))
+        
+        # Summary by severity
+        severity_counts = {}
+        for v in violations:
+            severity = v.get('severity', 'medium')
+            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+        
+        story.append(Paragraph("VIOLATION SUMMARY BY SEVERITY", styles['Heading2']))
+        for severity in ['critical', 'high', 'medium', 'low']:
+            count = severity_counts.get(severity, 0)
+            if count > 0:
+                color = red if severity == 'critical' else orange if severity == 'high' else Color(0.7, 0.7, 0) if severity == 'medium' else Color(0.5, 0.5, 0.5)
+                severity_style = ParagraphStyle('Severity', parent=styles['Normal'], textColor=color, fontSize=12, spaceAfter=6)
+                story.append(Paragraph(f"• {severity.upper()}: {count} violations", severity_style))
+        
+        story.append(Spacer(1, 20))
+        
+        # Detailed violations
+        story.append(Paragraph("DETAILED VIOLATIONS", styles['Heading1']))
+        story.append(Spacer(1, 10))
+        
+        for i, violation in enumerate(violations, 1):
+            # Violation header
+            violation_style = ParagraphStyle(
+                f'Violation{i}',
+                parent=styles['Normal'],
+                leftIndent=20,
+                rightIndent=20,
+                spaceBefore=10,
+                spaceAfter=10,
+                borderWidth=1,
+                borderColor=Color(0.8, 0.8, 0.8),
+                backColor=Color(0.98, 0.98, 0.98)
+            )
+            
+            severity = violation.get('severity', 'medium')
+            severity_color = red if severity == 'critical' else orange if severity == 'high' else Color(0.7, 0.7, 0) if severity == 'medium' else Color(0.5, 0.5, 0.5)
+            
+            violation_detail = f"<b>#{i}</b><br/>"
+            violation_detail += f"<b>Type:</b> {violation.get('violationType', 'Unknown')}<br/>"
+            violation_detail += f"<b>Page:</b> {violation.get('pageNumber', 'N/A')}<br/>"
+            violation_detail += f"<b>Severity:</b> <font color='{severity_color}'>{severity.upper()}</font><br/>"
+            violation_detail += f"<b>Violation Text:</b><br/><font color='red'><b>{violation.get('violationText', 'N/A')}</b></font><br/>"
+            violation_detail += f"<b>Explanation:</b> {violation.get('explanation', 'N/A')}<br/>"
+            violation_detail += f"<b>Suggested Action:</b> {violation.get('suggestedAction', 'N/A')}<br/>"
+            violation_detail += f"<b>Status:</b> <font color='red'>PENDING REVIEW</font>"
+            
+            story.append(Paragraph(violation_detail, violation_style))
+        
+        doc.build(story)
+        buffer.seek(0)
+        return buffer.getvalue()
+        
+    except Exception as e:
+        st.error(f"Error generating violations report PDF: {e}")
+        return None
+
+def generate_highlighted_text_pdf(text, violations, filename):
+    """Generate PDF with original text and highlighted violations"""
+    if not PDF_AVAILABLE:
+        return None
+    
+    try:
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
+        
+        styles = getSampleStyleSheet()
+        story = []
+        
+        # Title
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Title'],
+            fontSize=18,
+            spaceAfter=30,
+            textColor=Color(0.2, 0.2, 0.6),
+            alignment=1
+        )
+        
+        story.append(Paragraph("S&P COMPLIANCE - HIGHLIGHTED TEXT", title_style))
+        story.append(Paragraph(f"Document: {filename}", styles['Normal']))
+        story.append(Paragraph(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
+        story.append(Spacer(1, 20))
+        
+        # Legend
+        story.append(Paragraph("COLOR LEGEND", styles['Heading2']))
+        legend_text = """
+        <b>Background Colors indicate violation severity:</b><br/>
+        🔴 <font color="red">Critical Severity</font> - Red background, immediate attention required<br/>
+        🟠 <font color="orange">High Severity</font> - Orange background, high priority review<br/>
+        🟡 <font color="#B8860B">Medium Severity</font> - Yellow background, standard review<br/>
+        🟣 <font color="purple">Low Severity</font> - Purple background, minor issues<br/><br/>
+        <b><font color="red">Bold red text indicates the exact violation content</font></b> that triggered the S&P flag.
+        """
+        story.append(Paragraph(legend_text, styles['Normal']))
+        story.append(Spacer(1, 20))
+        
+        # Create violation mapping for highlighting
+        violation_map = {}
+        for violation in violations:
+            v_text = violation.get('violationText', '').strip()
+            severity = violation.get('severity', 'medium').lower()
+            
+            if v_text and len(v_text) >= 10:
+                violation_map[v_text] = {
+                    'severity': severity,
+                    'type': violation.get('violationType', 'Unknown'),
+                    'explanation': violation.get('explanation', '')
+                }
+        
+        # Process text with highlighting
+        story.append(Paragraph("DOCUMENT TEXT WITH HIGHLIGHTED VIOLATIONS", styles['Heading1']))
+        story.append(Spacer(1, 10))
+        
+        # Split text into paragraphs
+        paragraphs = text.split('\n')
+        
+        for para_text in paragraphs:
+            if para_text.strip():
+                # Skip page markers
+                if '=== PAGE' in para_text:
+                    continue
+                
+                # Check for violations in this paragraph
+                highlighted_text = para_text
+                has_violation = False
+                
+                # Sort violations by length (longest first) to avoid overlapping replacements
+                sorted_violations = sorted(violation_map.items(), key=lambda x: len(x[0]), reverse=True)
+                
+                for v_text, v_info in sorted_violations:
+                    if v_text in highlighted_text:
+                        severity = v_info['severity']
+                        
+                        # Color mapping
+                        if severity == 'critical':
+                            bg_color = '#ffcdd2'  # Light red
+                        elif severity == 'high':
+                            bg_color = '#fff3e0'  # Light orange
+                        elif severity == 'medium':
+                            bg_color = '#fffde7'  # Light yellow
+                        else:
+                            bg_color = '#f3e5f5'  # Light purple
+                        
+                        # Escape XML characters in violation text
+                        safe_v_text = v_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                        
+                        # Replace with highlighted version
+                        highlighted_replacement = f'<span style="background-color: {bg_color}; padding: 2px;"><font color="red"><b>{safe_v_text}</b></font></span>'
+                        highlighted_text = highlighted_text.replace(v_text, highlighted_replacement)
+                        has_violation = True
+                
+                # Add paragraph
+                if has_violation:
+                    # Highlighted paragraph style
+                    highlighted_style = ParagraphStyle(
+                        'HighlightedPara',
+                        parent=styles['Normal'],
+                        spaceBefore=6,
+                        spaceAfter=6,
+                        leftIndent=10,
+                        rightIndent=10
+                    )
+                    story.append(Paragraph(highlighted_text, highlighted_style))
+                else:
+                    # Normal paragraph
+                    if len(para_text) > 800:  # Truncate very long paragraphs
+                        para_text = para_text[:800] + "..."
+                    story.append(Paragraph(para_text, styles['Normal']))
+                
+                story.append(Spacer(1, 4))
+        
+        doc.build(story)
+        buffer.seek(0)
+        return buffer.getvalue()
+        
+    except Exception as e:
+        st.error(f"Error generating highlighted text PDF: {e}")
+        return None
+
 def create_violation_charts(violations):
     """Create visualization charts"""
     if not violations:
@@ -442,6 +660,11 @@ def main():
             st.success("✅ Excel Reports: Available")
         else:
             st.error("❌ Excel Reports: Missing")
+        
+        if PDF_AVAILABLE:
+            st.success("✅ PDF Generation: Available")
+        else:
+            st.error("❌ PDF Generation: Missing")
     
     # API Key
     api_key = get_api_key()
@@ -455,114 +678,234 @@ def main():
     else:
         st.success("🔑 API Key configured")
     
-    # File upload
-    st.header("📤 Upload Document")
-    uploaded_file = st.file_uploader(
-        "Choose a DOCX file",
-        type=['docx'],
-        help="Upload a Microsoft Word document for S&P compliance analysis"
-    )
+    # Main tabs for upload vs paste
+    tab1, tab2 = st.tabs(["📤 Upload Document", "📝 Paste Text"])
     
-    if uploaded_file is not None:
-        st.success(f"✅ File uploaded: {uploaded_file.name} ({uploaded_file.size/1024:.1f} KB)")
+    with tab1:
+        st.header("📤 Upload Document Analysis")
+        uploaded_file = st.file_uploader(
+            "Choose a DOCX file",
+            type=['docx'],
+            help="Upload a Microsoft Word document for S&P compliance analysis"
+        )
         
-        if st.button("🔍 Start Analysis", type="primary"):
-            # Extract text
-            with st.spinner("📄 Extracting text from document..."):
-                text, pages_data = extract_text_from_docx_bytes(uploaded_file.getvalue())
+        if uploaded_file is not None:
+            st.success(f"✅ File uploaded: {uploaded_file.name} ({uploaded_file.size/1024:.1f} KB)")
             
-            if not text:
-                st.error("❌ Failed to extract text from document")
-                return
+            if st.button("🔍 Start Analysis", type="primary", key="upload_analyze"):
+                # Extract text
+                with st.spinner("📄 Extracting text from document..."):
+                    text, pages_data = extract_text_from_docx_bytes(uploaded_file.getvalue())
+                
+                if not text:
+                    st.error("❌ Failed to extract text from document")
+                    return
+                
+                st.success(f"✅ Extracted {len(text):,} characters from {len(pages_data)} pages")
+                
+                # Analyze document
+                st.header("🤖 Analysis in Progress")
+                analysis = analyze_document(text, pages_data, api_key)
+                
+                violations = analysis.get('violations', [])
+                summary = analysis.get('summary', {})
+                
+                # Results
+                st.header("📊 Analysis Results")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total Violations", summary.get('totalViolations', 0))
+                with col2:
+                    critical_count = len([v for v in violations if v.get('severity') == 'critical'])
+                    st.metric("🔴 Critical", critical_count)
+                with col3:
+                    st.metric("📄 Pages", summary.get('totalPages', 0))
+                with col4:
+                    st.metric("✅ Success Rate", summary.get('successRate', '0%'))
+                
+                if violations:
+                    # Charts
+                    st.subheader("📈 Violation Analytics")
+                    fig_severity, fig_types = create_violation_charts(violations)
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if fig_severity:
+                            st.plotly_chart(fig_severity, use_container_width=True)
+                    
+                    with col2:
+                        if fig_types:
+                            st.plotly_chart(fig_types, use_container_width=True)
+                    
+                    # Violation details
+                    st.subheader(f"🚨 Violations Found: {len(violations)}")
+                    
+                    for i, violation in enumerate(violations[:10]):  # Show first 10
+                        severity = violation.get('severity', 'low')
+                        
+                        if severity == 'critical':
+                            st.error(f"🔴 **{violation.get('violationType', 'Unknown')}** (Page {violation.get('pageNumber', 'N/A')})")
+                        elif severity == 'high':
+                            st.warning(f"🟠 **{violation.get('violationType', 'Unknown')}** (Page {violation.get('pageNumber', 'N/A')})")
+                        elif severity == 'medium':
+                            st.info(f"🟡 **{violation.get('violationType', 'Unknown')}** (Page {violation.get('pageNumber', 'N/A')})")
+                        else:
+                            st.success(f"🟢 **{violation.get('violationType', 'Unknown')}** (Page {violation.get('pageNumber', 'N/A')})")
+                        
+                        st.write(f"**Violated Text:** \"{violation.get('violationText', 'N/A')[:200]}...\"")
+                        st.write(f"**Issue:** {violation.get('explanation', 'N/A')}")
+                        st.write(f"**Action:** {violation.get('suggestedAction', 'N/A')}")
+                        st.divider()
+                    
+                    if len(violations) > 10:
+                        st.info(f"Showing first 10 of {len(violations)} total violations")
+                    
+                    # Generate all reports
+                    st.subheader("📥 Download Reports")
+                    
+                    with st.spinner("Generating reports..."):
+                        # Excel report
+                        excel_data = generate_excel_report(violations, uploaded_file.name)
+                        
+                        # PDF reports
+                        violations_report_pdf = generate_violations_report_pdf(violations, uploaded_file.name)
+                        highlighted_text_pdf = generate_highlighted_text_pdf(text, violations, uploaded_file.name)
+                    
+                    # Download buttons
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        if excel_data:
+                            st.download_button(
+                                label="📊 Download Excel Report",
+                                data=excel_data,
+                                file_name=f"{uploaded_file.name}_analysis.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True
+                            )
+                    
+                    with col2:
+                        if violations_report_pdf:
+                            st.download_button(
+                                label="📋 Download Violations Report PDF",
+                                data=violations_report_pdf,
+                                file_name=f"{uploaded_file.name}_violations_report.pdf",
+                                mime="application/pdf",
+                                use_container_width=True
+                            )
+                    
+                    with col3:
+                        if highlighted_text_pdf:
+                            st.download_button(
+                                label="🎨 Download Highlighted Text PDF",
+                                data=highlighted_text_pdf,
+                                file_name=f"{uploaded_file.name}_highlighted_text.pdf",
+                                mime="application/pdf",
+                                use_container_width=True
+                            )
+                    
+                    if not all([excel_data, violations_report_pdf, highlighted_text_pdf]):
+                        st.warning("⚠️ Some reports could not be generated. Check system status in sidebar.")
+                
+                else:
+                    st.success("🎉 No violations found! Content appears to comply with S&P standards.")
+    
+    with tab2:
+        st.header("📝 Paste Text Analysis")
+        
+        text_input = st.text_area(
+            "Paste your content here",
+            height=300,
+            placeholder="Paste your script, dialogue, or content here for immediate S&P compliance analysis..."
+        )
+        
+        if text_input and st.button("🔍 Analyze Text", type="primary", key="paste_analyze"):
+            # Create mock pages data for pasted text
+            pages_data = [{"page_number": 1, "text": text_input}]
             
-            st.success(f"✅ Extracted {len(text):,} characters from {len(pages_data)} pages")
-            
-            # Analyze document
-            st.header("🤖 Analysis in Progress")
-            analysis = analyze_document(text, pages_data, api_key)
+            # Analyze pasted text
+            st.header("🤖 Analyzing Pasted Text")
+            analysis = analyze_document(text_input, pages_data, api_key)
             
             violations = analysis.get('violations', [])
-            summary = analysis.get('summary', {})
             
-            # Results
+            # Results for pasted text
             st.header("📊 Analysis Results")
             
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Violations", summary.get('totalViolations', 0))
-            with col2:
-                critical_count = len([v for v in violations if v.get('severity') == 'critical'])
-                st.metric("🔴 Critical", critical_count, delta_color="inverse")
-            with col3:
-                st.metric("📄 Pages", summary.get('totalPages', 0))
-            with col4:
-                st.metric("✅ Success Rate", summary.get('successRate', '0%'))
-            
             if violations:
-                # Charts
-                st.subheader("📈 Violation Analytics")
-                fig_severity, fig_types = create_violation_charts(violations)
+                st.error(f"🚨 Found {len(violations)} violations in your text!")
                 
-                col1, col2 = st.columns(2)
-                with col1:
-                    if fig_severity:
-                        st.plotly_chart(fig_severity, use_container_width=True)
+                # Show violations with exact context
+                st.subheader("🔍 Violated Strings with Context")
                 
-                with col2:
-                    if fig_types:
-                        st.plotly_chart(fig_types, use_container_width=True)
-                
-                # Filters
-                st.subheader("🔍 Filter Violations")
-                col1, col2 = st.columns(2)
-                with col1:
-                    severity_filter = st.selectbox("Severity", ["All", "Critical", "High", "Medium", "Low"])
-                with col2:
-                    type_filter = st.selectbox("Type", ["All"] + list(set([v.get('violationType', 'Unknown') for v in violations])))
-                
-                # Apply filters
-                filtered_violations = violations.copy()
-                if severity_filter != "All":
-                    filtered_violations = [v for v in filtered_violations if v.get('severity', '').lower() == severity_filter.lower()]
-                if type_filter != "All":
-                    filtered_violations = [v for v in filtered_violations if v.get('violationType') == type_filter]
-                
-                # Display violations
-                st.subheader(f"🚨 Violations ({len(filtered_violations)} shown)")
-                
-                for i, violation in enumerate(filtered_violations):
+                for i, violation in enumerate(violations, 1):
                     severity = violation.get('severity', 'low')
                     
-                    # Color-coded display
+                    # Color-coded violation display
                     if severity == 'critical':
-                        st.error(f"🔴 **{violation.get('violationType', 'Unknown')}** (Page {violation.get('pageNumber', 'N/A')})")
+                        st.error(f"**🔴 Violation #{i}: {violation.get('violationType', 'Unknown')}**")
                     elif severity == 'high':
-                        st.warning(f"🟠 **{violation.get('violationType', 'Unknown')}** (Page {violation.get('pageNumber', 'N/A')})")
+                        st.warning(f"**🟠 Violation #{i}: {violation.get('violationType', 'Unknown')}**")
                     elif severity == 'medium':
-                        st.info(f"🟡 **{violation.get('violationType', 'Unknown')}** (Page {violation.get('pageNumber', 'N/A')})")
+                        st.info(f"**🟡 Violation #{i}: {violation.get('violationType', 'Unknown')}**")
                     else:
-                        st.success(f"🟢 **{violation.get('violationType', 'Unknown')}** (Page {violation.get('pageNumber', 'N/A')})")
+                        st.success(f"**🟢 Violation #{i}: {violation.get('violationType', 'Unknown')}**")
                     
-                    st.write(f"**Text:** \"{violation.get('violationText', 'N/A')}\"")
-                    st.write(f"**Issue:** {violation.get('explanation', 'N/A')}")
-                    st.write(f"**Action:** {violation.get('suggestedAction', 'N/A')}")
+                    # Show violated text with highlighting
+                    violated_text = violation.get('violationText', '')
+                    
+                    # Create highlighted version of the original text
+                    highlighted_context = text_input
+                    if violated_text in highlighted_context:
+                        if severity == 'critical':
+                            color = "#ffcdd2"
+                        elif severity == 'high':
+                            color = "#fff3e0"
+                        elif severity == 'medium':
+                            color = "#fffde7"
+                        else:
+                            color = "#f3e5f5"
+                        
+                        # Highlight the violated text
+                        highlighted_context = highlighted_context.replace(
+                            violated_text,
+                            f'<span style="background-color: {color}; padding: 2px 4px; border-radius: 3px; font-weight: bold; color: red;">{violated_text}</span>'
+                        )
+                    
+                    # Show context around violation
+                    st.markdown("**Violated Text:**")
+                    st.markdown(f'<div style="background-color: #fafafa; padding: 10px; border-radius: 5px; border-left: 3px solid red;"><b style="color: red;">"{violated_text}"</b></div>', unsafe_allow_html=True)
+                    
+                    st.markdown("**Context in Original Text:**")
+                    st.markdown(f'<div style="background-color: #fafafa; padding: 10px; border-radius: 5px; max-height: 200px; overflow-y: auto;">{highlighted_context}</div>', unsafe_allow_html=True)
+                    
+                    st.markdown(f"**Why this violates S&P standards:** {violation.get('explanation', 'N/A')}")
+                    st.markdown(f"**Suggested action:** {violation.get('suggestedAction', 'N/A')}")
+                    st.markdown(f"**Severity:** {severity.upper()}")
+                    
                     st.divider()
                 
-                # Download report
-                st.subheader("📥 Download Report")
-                excel_data = generate_excel_report(violations, uploaded_file.name)
+                # Show severity summary
+                st.subheader("📊 Violation Summary")
+                severity_counts = {}
+                for v in violations:
+                    severity = v.get('severity', 'medium')
+                    severity_counts[severity] = severity_counts.get(severity, 0) + 1
                 
-                if excel_data:
-                    st.download_button(
-                        label="📊 Download Excel Report",
-                        data=excel_data,
-                        file_name=f"{uploaded_file.name}_analysis.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                else:
-                    st.error("❌ Could not generate Excel report")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("🔴 Critical", severity_counts.get('critical', 0))
+                with col2:
+                    st.metric("🟠 High", severity_counts.get('high', 0))
+                with col3:
+                    st.metric("🟡 Medium", severity_counts.get('medium', 0))
+                with col4:
+                    st.metric("🟢 Low", severity_counts.get('low', 0))
+                
             else:
-                st.success("🎉 No violations found! Content appears to comply with S&P standards.")
+                st.success("🎉 No violations found! Your text appears to comply with S&P standards.")
+                st.balloons()
     
     # Footer with violation rules
     with st.expander("📋 S&P Violation Categories Reference"):
