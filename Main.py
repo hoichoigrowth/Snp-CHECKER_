@@ -2,250 +2,398 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import json
 import os
 import time
 from datetime import datetime
 import re
 import io
-import zipfile
-from typing import Dict, List, Any
 import hashlib
+from typing import Dict, List, Any
 
-# Import your backend functions
-import sys
-sys.path.append('.')  # Add current directory to path
-from snp6 import (
-    extract_text_from_docx, 
-    analyze_document_robust, 
-    save_xlsx_report,
-    create_highlighted_pdf_from_docx,
-    OPENAI_API_KEY,
-    VIOLATION_RULES
-)
+# Import optional dependencies with error handling
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
 
-# Page configuration
+try:
+    from docx import Document
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
+
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    EXCEL_AVAILABLE = True
+except ImportError:
+    EXCEL_AVAILABLE = False
+
+# Configuration
+MAX_CHARS_PER_CHUNK = 4000
+OVERLAP_CHARS = 200
+MAX_TOKENS_OUTPUT = 1000
+CHUNK_DELAY = 1
+MAX_RETRIES = 3
+
+# S&P Violation Rules
+VIOLATION_RULES = {
+    "National_Symbols_Anthem": {
+        "description": "Improper use of national symbols, anthem, flag, or government emblems",
+        "keywords": ["national anthem", "flag", "tricolor", "ashoka chakra", "government logo"],
+        "severity": "critical"
+    },
+    "PI_Data_Brand_References": {
+        "description": "Personal information exposure, unauthorized brand references, trademark violations",
+        "keywords": ["personal data", "phone number", "address", "brand name", "trademark"],
+        "severity": "high"
+    },
+    "Credits_Endorsements": {
+        "description": "Missing credits, unauthorized endorsements, celebrity impersonation",
+        "keywords": ["credit", "endorsement", "celebrity", "sponsor", "testimonial"],
+        "severity": "medium"
+    },
+    "Religious_Cultural_Sensitivity": {
+        "description": "Religious insensitivity, cultural stereotypes, communal bias, offensive content",
+        "keywords": ["religion", "god", "hindu", "muslim", "christian", "sikh", "culture", "caste"],
+        "severity": "critical"
+    },
+    "Animal_Welfare": {
+        "description": "Animal cruelty, unsafe animal handling, wildlife protection violations",
+        "keywords": ["animal", "cruelty", "pet", "wildlife", "zoo", "circus"],
+        "severity": "high"
+    },
+    "Disclaimers_Warnings": {
+        "description": "Missing disclaimers, inadequate warnings, safety information gaps",
+        "keywords": ["disclaimer", "warning", "caution", "safety", "risk"],
+        "severity": "medium"
+    },
+    "Smoking_Alcohol_Social_Evils": {
+        "description": "Glorification of smoking, alcohol abuse, gambling, or other social evils",
+        "keywords": ["smoke", "cigarette", "alcohol", "drink", "gambling", "bet", "drugs"],
+        "severity": "high"
+    },
+    "Child_Safety": {
+        "description": "Content harmful to minors, inappropriate child representation, safety risks",
+        "keywords": ["child", "minor", "kid", "school", "unsafe", "inappropriate"],
+        "severity": "critical"
+    },
+    "Violence_Self_Harm": {
+        "description": "Graphic violence, self-harm content, suicide references, dangerous activities",
+        "keywords": ["violence", "fight", "blood", "suicide", "self-harm", "dangerous", "weapon"],
+        "severity": "critical"
+    },
+    "Substances_Addiction": {
+        "description": "Drug use promotion, addiction glorification, substance abuse normalization",
+        "keywords": ["drugs", "addiction", "substance", "abuse", "dealer", "high", "overdose"],
+        "severity": "critical"
+    }
+}
+
+# Streamlit App Configuration
 st.set_page_config(
-    page_title="S&P Compliance Review | hoichoi",
-    page_icon="🎬",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="S&P Compliance Analyzer",
+    page_icon="🔍",
+    layout="wide"
 )
 
-# Custom CSS
-st.markdown("""
-<style>
-    .main-header {
-        background: linear-gradient(90deg, #ff6b6b, #4ecdc4);
-        padding: 1rem;
-        border-radius: 10px;
-        color: white;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .violation-critical {
-        background-color: #ffebee;
-        border-left: 5px solid #f44336;
-        padding: 10px;
-        margin: 5px 0;
-    }
-    .violation-high {
-        background-color: #fff3e0;
-        border-left: 5px solid #ff9800;
-        padding: 10px;
-        margin: 5px 0;
-    }
-    .violation-medium {
-        background-color: #fffde7;
-        border-left: 5px solid #ffeb3b;
-        padding: 10px;
-        margin: 5px 0;
-    }
-    .violation-low {
-        background-color: #f3e5f5;
-        border-left: 5px solid #9c27b0;
-        padding: 10px;
-        margin: 5px 0;
-    }
-    .scene-header {
-        background-color: #e3f2fd;
-        padding: 8px;
-        border-radius: 5px;
-        font-weight: bold;
-        margin: 10px 0;
-    }
-    .comment-box {
-        background-color: #f5f5f5;
-        padding: 10px;
-        border-radius: 5px;
-        margin: 5px 0;
-    }
-    .resolved-comment {
-        background-color: #e8f5e8;
-        border-left: 3px solid #4caf50;
-    }
-</style>
-""", unsafe_allow_html=True)
+def get_api_key():
+    """Get OpenAI API key from Streamlit secrets or user input"""
+    try:
+        return st.secrets["OPENAI_API_KEY"]
+    except:
+        return None
 
-# Authentication functions
-def check_email_domain(email: str) -> bool:
-    """Check if email belongs to hoichoi.tv domain"""
-    return email.endswith('@hoichoi.tv')
-
-def hash_password(password: str) -> str:
-    """Simple password hashing"""
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def authenticate_user():
-    """Handle user authentication"""
-    if 'authenticated' not in st.session_state:
-        st.session_state.authenticated = False
-    
-    if not st.session_state.authenticated:
-        st.markdown("""
-        <div class="main-header">
-            <h1>🎬 S&P Compliance Review</h1>
-            <h3>hoichoi Content Standards & Practices</h3>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        with st.container():
-            col1, col2, col3 = st.columns([1, 2, 1])
-            with col2:
-                st.subheader("🔐 Login Required")
-                email = st.text_input("Email Address", placeholder="yourname@hoichoi.tv")
-                password = st.text_input("Password", type="password")
-                
-                if st.button("Login", type="primary", use_container_width=True):
-                    if check_email_domain(email):
-                        # Simple authentication - in production, use proper auth
-                        st.session_state.authenticated = True
-                        st.session_state.user_email = email
-                        st.session_state.is_admin = email in ['admin@hoichoi.tv', 'sp@hoichoi.tv']
-                        st.rerun()
-                    else:
-                        st.error("❌ Access denied. Only @hoichoi.tv email addresses are allowed.")
-                
-                st.info("ℹ️ Please use your hoichoi.tv email address to access the S&P review system.")
-        
-        return False
-    
-    return True
-
-# Data persistence functions
-@st.cache_data
-def load_comments_data():
-    """Load comments data from session state or initialize"""
-    if 'comments_data' not in st.session_state:
-        st.session_state.comments_data = {}
-    return st.session_state.comments_data
-
-def save_comment(script_id: str, scene_id: str, comment: Dict):
-    """Save a comment to the comments database"""
-    if 'comments_data' not in st.session_state:
-        st.session_state.comments_data = {}
-    
-    if script_id not in st.session_state.comments_data:
-        st.session_state.comments_data[script_id] = {}
-    
-    if scene_id not in st.session_state.comments_data[script_id]:
-        st.session_state.comments_data[script_id][scene_id] = []
-    
-    comment['id'] = len(st.session_state.comments_data[script_id][scene_id])
-    comment['timestamp'] = datetime.now().isoformat()
-    comment['user'] = st.session_state.user_email
-    
-    st.session_state.comments_data[script_id][scene_id].append(comment)
-
-# FIXED: Fast report generation
-def generate_quick_reports(violations, filename):
-    """Generate reports quickly for download"""
-    
-    # Generate XLSX
-    df = pd.DataFrame(violations)
-    xlsx_buffer = io.BytesIO()
-    
-    with pd.ExcelWriter(xlsx_buffer, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name='Violations', index=False)
-        
-        # Summary
-        summary = pd.DataFrame({
-            'Metric': ['Total', 'Critical', 'High', 'Medium', 'Low'],
-            'Count': [
-                len(violations),
-                len([v for v in violations if v.get('severity') == 'critical']),
-                len([v for v in violations if v.get('severity') == 'high']),
-                len([v for v in violations if v.get('severity') == 'medium']),
-                len([v for v in violations if v.get('severity') == 'low'])
-            ]
-        })
-        summary.to_excel(writer, sheet_name='Summary', index=False)
-    
-    xlsx_buffer.seek(0)
-    
-    # Generate PDF content
-    pdf_content = f"""S&P COMPLIANCE REPORT
-File: {filename}
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-SUMMARY:
-Total Violations: {len(violations)}
-Critical: {len([v for v in violations if v.get('severity') == 'critical'])}
-High: {len([v for v in violations if v.get('severity') == 'high'])}
-
-VIOLATIONS:
-"""
-    
-    for i, v in enumerate(violations[:10], 1):
-        pdf_content += f"\n{i}. {v.get('violationType', 'Unknown')} (Page {v.get('pageNumber', 'N/A')})\n"
-        pdf_content += f"   Text: {v.get('violationText', 'N/A')[:100]}...\n"
-        pdf_content += f"   Action: {v.get('suggestedAction', 'N/A')}\n"
-    
-    return xlsx_buffer.getvalue(), pdf_content.encode('utf-8')
-
-# Analysis functions
-def analyze_script(file_content: bytes, filename: str) -> Dict[str, Any]:
-    """Analyze uploaded script file"""
-    
-    # Save uploaded file temporarily
-    temp_file = f"temp_{filename}"
-    with open(temp_file, "wb") as f:
-        f.write(file_content)
+def extract_text_from_docx_bytes(file_bytes):
+    """Extract text from uploaded DOCX file bytes"""
+    if not DOCX_AVAILABLE:
+        st.error("❌ python-docx not available. Please check requirements.txt")
+        return None, []
     
     try:
-        # Extract text
-        text, pages_data = extract_text_from_docx(temp_file)
+        doc = Document(io.BytesIO(file_bytes))
+        pages_data = []
+        full_text = ""
         
-        if not text:
-            return {"error": "Failed to extract text from document"}
+        page_num = 1
+        current_page_text = ""
+        char_count = 0
         
-        # Analyze with your backend
-        analysis = analyze_document_robust(text, pages_data, OPENAI_API_KEY)
+        for para in doc.paragraphs:
+            para_text = para.text
+            
+            if para_text.strip():
+                current_page_text += para_text + "\n"
+                char_count += len(para_text) + 1
+                
+                if char_count > 2000:
+                    pages_data.append({
+                        'page_number': page_num,
+                        'text': current_page_text.strip()
+                    })
+                    full_text += f"\n=== PAGE {page_num} ===\n{current_page_text}\n"
+                    
+                    page_num += 1
+                    current_page_text = ""
+                    char_count = 0
         
-        # Clean up temp file
-        os.remove(temp_file)
+        if current_page_text.strip():
+            pages_data.append({
+                'page_number': page_num,
+                'text': current_page_text.strip()
+            })
+            full_text += f"\n=== PAGE {page_num} ===\n{current_page_text}\n"
         
-        return {
-            "success": True,
-            "analysis": analysis,
-            "text": text,
-            "pages_data": pages_data,
-            "filename": filename
-        }
-    
+        return full_text, pages_data
+        
     except Exception as e:
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-        return {"error": f"Analysis failed: {str(e)}"}
+        st.error(f"Error extracting text: {e}")
+        return None, []
 
-def create_violation_charts(violations: List[Dict]) -> tuple:
-    """Create visualization charts for violations"""
+def chunk_text(text, max_chars=MAX_CHARS_PER_CHUNK):
+    """Split text into analysis chunks"""
+    if len(text) <= max_chars:
+        return [text]
     
+    chunks = []
+    start = 0
+    overlap = OVERLAP_CHARS
+    
+    while start < len(text):
+        end = start + max_chars
+        
+        if end < len(text):
+            # Find good break points
+            break_points = ['\n=== PAGE', '.\n', '. ', '\n\n', '\n', ' ']
+            best_break = end
+            
+            for break_point in break_points:
+                search_start = max(start + max_chars // 2, end - 500)
+                last_break = text.rfind(break_point, search_start, end)
+                
+                if last_break > search_start:
+                    best_break = last_break + len(break_point)
+                    break
+            
+            end = best_break
+        
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        
+        start = end - overlap
+        if start >= len(text):
+            break
+    
+    return chunks
+
+def create_analysis_prompt():
+    """Create S&P compliance analysis prompt"""
+    violation_types = []
+    for v_type, details in VIOLATION_RULES.items():
+        violation_types.append(f"- {v_type.replace('_', ' ')}: {details['description']} (Severity: {details['severity']})")
+    
+    violation_types_str = "\n".join(violation_types)
+    
+    return f"""You are an expert S&P compliance reviewer for Indian digital media. Analyze this content chunk for violations.
+
+VIOLATION CATEGORIES (choose most appropriate):
+{violation_types_str}
+
+CRITICAL INSTRUCTIONS:
+1. Copy violation text EXACTLY as it appears
+2. Extract meaningful violations only (minimum 10 characters)
+3. Choose appropriate category and severity
+4. Focus on substantial policy violations
+
+Return ONLY valid JSON:
+{{
+  "violations": [
+    {{
+      "violationText": "EXACT text preserving all formatting",
+      "violationType": "Category name from list above",
+      "explanation": "why this violates broadcasting standards",
+      "suggestedAction": "specific remediation needed",
+      "severity": "critical|high|medium|low"
+    }}
+  ]
+}}
+
+If no violations found, return: {{"violations": []}}"""
+
+def analyze_chunk(chunk, chunk_num, total_chunks, api_key):
+    """Analyze single chunk with OpenAI"""
+    if not OPENAI_AVAILABLE or not api_key:
+        return {"violations": []}
+    
+    try:
+        client = OpenAI(api_key=api_key)
+        
+        prompt = create_analysis_prompt()
+        full_prompt = f"""{prompt}
+
+Content to analyze:
+{chunk}
+
+JSON response only:"""
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are an S&P compliance expert. Return only valid JSON."},
+                {"role": "user", "content": full_prompt}
+            ],
+            temperature=0.1,
+            max_tokens=MAX_TOKENS_OUTPUT,
+            timeout=60
+        )
+        
+        result = response.choices[0].message.content.strip()
+        
+        # Parse JSON with fallback
+        try:
+            parsed_result = json.loads(result)
+        except json.JSONDecodeError:
+            json_start = result.find('{')
+            json_end = result.rfind('}')
+            if json_start != -1 and json_end != -1:
+                json_text = result[json_start:json_end + 1]
+                try:
+                    parsed_result = json.loads(json_text)
+                except:
+                    return {"violations": []}
+            else:
+                return {"violations": []}
+        
+        # Validate violations
+        if 'violations' in parsed_result:
+            enhanced_violations = []
+            for violation in parsed_result['violations']:
+                violation_text = violation.get('violationText', '').strip()
+                if len(violation_text) >= 10:
+                    enhanced_violations.append(violation)
+            parsed_result['violations'] = enhanced_violations
+        
+        time.sleep(CHUNK_DELAY)
+        return parsed_result
+        
+    except Exception as e:
+        st.error(f"Error analyzing chunk {chunk_num}: {e}")
+        return {"violations": []}
+
+def find_page_number(violation_text, pages_data):
+    """Find which page contains the violation"""
+    for page_data in pages_data:
+        if violation_text in page_data['text']:
+            return page_data['page_number']
+    
+    # Fuzzy matching
+    search_text = violation_text[:50] if len(violation_text) > 50 else violation_text
+    for page_data in pages_data:
+        if search_text in page_data['text']:
+            return page_data['page_number']
+    
+    return 1
+
+def analyze_document(text, pages_data, api_key):
+    """Analyze entire document"""
+    if not text or not api_key:
+        return {"violations": [], "summary": {}}
+    
+    chunks = chunk_text(text)
+    all_violations = []
+    successful_chunks = 0
+    
+    # Progress tracking
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, chunk in enumerate(chunks):
+        progress = (i + 1) / len(chunks)
+        progress_bar.progress(progress)
+        status_text.text(f"Analyzing chunk {i+1}/{len(chunks)}...")
+        
+        analysis = analyze_chunk(chunk, i+1, len(chunks), api_key)
+        
+        if 'violations' in analysis:
+            for violation in analysis['violations']:
+                violation['pageNumber'] = find_page_number(violation.get('violationText', ''), pages_data)
+                violation['chunkNumber'] = i + 1
+                all_violations.append(violation)
+            successful_chunks += 1
+    
+    progress_bar.progress(1.0)
+    status_text.text("✅ Analysis complete!")
+    
+    # Remove duplicates
+    unique_violations = []
+    seen_texts = set()
+    for violation in all_violations:
+        v_text = violation.get('violationText', '')
+        duplicate_key = (v_text[:100], violation.get('violationType', ''), violation.get('pageNumber', 0))
+        
+        if duplicate_key not in seen_texts:
+            seen_texts.add(duplicate_key)
+            unique_violations.append(violation)
+    
+    # Sort by page and severity
+    severity_order = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1}
+    unique_violations.sort(key=lambda x: (
+        x.get('pageNumber', 0),
+        -severity_order.get(x.get('severity', 'low'), 1)
+    ))
+    
+    return {
+        "violations": unique_violations,
+        "summary": {
+            "totalViolations": len(unique_violations),
+            "totalPages": len(pages_data),
+            "chunksAnalyzed": len(chunks),
+            "successfulChunks": successful_chunks,
+            "successRate": f"{(successful_chunks/len(chunks)*100):.1f}%" if chunks else "0%"
+        }
+    }
+
+def generate_excel_report(violations, filename):
+    """Generate Excel report"""
+    if not EXCEL_AVAILABLE:
+        return None
+    
+    try:
+        df = pd.DataFrame(violations)
+        buffer = io.BytesIO()
+        
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Violations', index=False)
+            
+            # Summary sheet
+            summary_data = {
+                'Metric': ['Total Violations', 'Critical', 'High', 'Medium', 'Low'],
+                'Count': [
+                    len(violations),
+                    len([v for v in violations if v.get('severity') == 'critical']),
+                    len([v for v in violations if v.get('severity') == 'high']),
+                    len([v for v in violations if v.get('severity') == 'medium']),
+                    len([v for v in violations if v.get('severity') == 'low'])
+                ]
+            }
+            summary_df = pd.DataFrame(summary_data)
+            summary_df.to_excel(writer, sheet_name='Summary', index=False)
+        
+        buffer.seek(0)
+        return buffer.getvalue()
+        
+    except Exception as e:
+        st.error(f"Error generating Excel report: {e}")
+        return None
+
+def create_violation_charts(violations):
+    """Create visualization charts"""
     if not violations:
-        return None, None, None
+        return None, None
     
-    # Prepare data
     df = pd.DataFrame(violations)
     
     # Severity distribution
@@ -270,710 +418,166 @@ def create_violation_charts(violations: List[Dict]) -> tuple:
         labels={'x': 'Count', 'y': 'Violation Type'}
     )
     
-    # Page distribution
-    page_counts = df['pageNumber'].value_counts().sort_index()
-    fig_pages = px.line(
-        x=page_counts.index,
-        y=page_counts.values,
-        title="Violations by Page",
-        labels={'x': 'Page Number', 'y': 'Violation Count'}
+    return fig_severity, fig_types
+
+def main():
+    # Header
+    st.title("🔍 S&P Compliance Analyzer")
+    st.markdown("**Standards & Practices Compliance Checker for Digital Media**")
+    
+    # System status in sidebar
+    with st.sidebar:
+        st.header("🔧 System Status")
+        if OPENAI_AVAILABLE:
+            st.success("✅ OpenAI: Available")
+        else:
+            st.error("❌ OpenAI: Missing")
+        
+        if DOCX_AVAILABLE:
+            st.success("✅ DOCX Processing: Available")
+        else:
+            st.error("❌ DOCX Processing: Missing")
+        
+        if EXCEL_AVAILABLE:
+            st.success("✅ Excel Reports: Available")
+        else:
+            st.error("❌ Excel Reports: Missing")
+    
+    # API Key
+    api_key = get_api_key()
+    
+    if not api_key:
+        st.warning("⚠️ OpenAI API key not configured!")
+        st.info("Please add OPENAI_API_KEY to Streamlit secrets or environment variables.")
+        api_key = st.text_input("Enter OpenAI API Key", type="password", help="Your OpenAI API key for content analysis")
+        if not api_key:
+            st.stop()
+    else:
+        st.success("🔑 API Key configured")
+    
+    # File upload
+    st.header("📤 Upload Document")
+    uploaded_file = st.file_uploader(
+        "Choose a DOCX file",
+        type=['docx'],
+        help="Upload a Microsoft Word document for S&P compliance analysis"
     )
     
-    return fig_severity, fig_types, fig_pages
-
-def extract_scenes(text: str) -> List[Dict]:
-    """Extract scenes from script text based on INT./EXT. headers"""
-    
-    # Pattern to match scene headers
-    scene_pattern = r'\b(INT\.|EXT\.)\s+([A-Z][A-Z\s\-\.]+?)(?:\s*-\s*(DAY|NIGHT|MORNING|EVENING|DAWN|DUSK))?\b'
-    
-    scenes = []
-    lines = text.split('\n')
-    current_scene = None
-    current_content = []
-    
-    for i, line in enumerate(lines):
-        line = line.strip()
+    if uploaded_file is not None:
+        st.success(f"✅ File uploaded: {uploaded_file.name} ({uploaded_file.size/1024:.1f} KB)")
         
-        # Check if this line is a scene header
-        match = re.search(scene_pattern, line.upper())
-        
-        if match:
-            # Save previous scene
-            if current_scene:
-                current_scene['content'] = '\n'.join(current_content)
-                current_scene['end_line'] = i - 1
-                scenes.append(current_scene)
+        if st.button("🔍 Start Analysis", type="primary"):
+            # Extract text
+            with st.spinner("📄 Extracting text from document..."):
+                text, pages_data = extract_text_from_docx_bytes(uploaded_file.getvalue())
             
-            # Start new scene
-            current_scene = {
-                'id': len(scenes),
-                'header': line,
-                'location_type': match.group(1),
-                'location': match.group(2).strip(),
-                'time': match.group(3) if match.group(3) else 'UNSPECIFIED',
-                'start_line': i,
-                'end_line': None
-            }
-            current_content = [line]
-        else:
-            if current_scene:
-                current_content.append(line)
-    
-    # Add final scene
-    if current_scene:
-        current_scene['content'] = '\n'.join(current_content)
-        current_scene['end_line'] = len(lines) - 1
-        scenes.append(current_scene)
-    
-    return scenes
-
-# Main app tabs
-def tab_edit_own_script():
-    """Tab 1: Edit Own Script"""
-    st.header("📝 Edit Own Script")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.subheader("Upload Script")
-        uploaded_file = st.file_uploader(
-            "Choose a DOCX file",
-            type=['docx'],
-            help="Upload your script in DOCX format for S&P compliance review"
-        )
-        
-        if uploaded_file is not None:
-            # Show file details
-            st.info(f"📄 File: {uploaded_file.name} ({uploaded_file.size / 1024:.1f} KB)")
+            if not text:
+                st.error("❌ Failed to extract text from document")
+                return
             
-            if st.button("🔍 Start Analysis", type="primary", use_container_width=True):
-                
-                # Progress tracking
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                # Step 1: Upload and extract
-                status_text.text("📄 Extracting text from document...")
-                progress_bar.progress(20)
-                time.sleep(0.5)
-                
-                # Analyze script
-                result = analyze_script(uploaded_file.getvalue(), uploaded_file.name)
-                
-                if "error" in result:
-                    st.error(f"❌ {result['error']}")
-                    return
-                
-                # Step 2: Analysis
-                status_text.text("🤖 Analyzing content for S&P violations...")
-                progress_bar.progress(60)
-                time.sleep(1)
-                
-                # Step 3: Generate reports
-                status_text.text("📊 Generating reports...")
-                progress_bar.progress(80)
-                
-                analysis = result['analysis']
-                violations = analysis.get('violations', [])
-                
-                # Save to session state
-                st.session_state.current_analysis = result
-                
-                progress_bar.progress(100)
-                status_text.text("✅ Analysis complete!")
-                
-                # Show results
-                st.success(f"🎉 Analysis completed! Found {len(violations)} violations.")
-    
-    with col2:
-        if 'current_analysis' in st.session_state:
-            analysis = st.session_state.current_analysis['analysis']
+            st.success(f"✅ Extracted {len(text):,} characters from {len(pages_data)} pages")
+            
+            # Analyze document
+            st.header("🤖 Analysis in Progress")
+            analysis = analyze_document(text, pages_data, api_key)
+            
             violations = analysis.get('violations', [])
+            summary = analysis.get('summary', {})
             
-            st.subheader("📊 Quick Stats")
+            # Results
+            st.header("📊 Analysis Results")
             
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.metric("Total Violations", len(violations))
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Violations", summary.get('totalViolations', 0))
+            with col2:
                 critical_count = len([v for v in violations if v.get('severity') == 'critical'])
-                st.metric("Critical", critical_count, delta_color="inverse")
-            
-            with col_b:
-                st.metric("Pages Analyzed", analysis['summary']['totalPages'])
-                success_rate = float(analysis['summary']['successRate'].replace('%', ''))
-                st.metric("Success Rate", f"{success_rate:.1f}%")
-    
-    # Show detailed analysis if available
-    if 'current_analysis' in st.session_state:
-        st.divider()
-        
-        analysis = st.session_state.current_analysis['analysis']
-        violations = analysis.get('violations', [])
-        
-        if violations:
-            # Violation analytics
-            st.subheader("📈 Violation Analytics")
-            
-            # Create charts
-            fig_severity, fig_types, fig_pages = create_violation_charts(violations)
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                if fig_severity:
-                    st.plotly_chart(fig_severity, use_container_width=True)
-            
-            with col2:
-                if fig_types:
-                    st.plotly_chart(fig_types, use_container_width=True)
-            
+                st.metric("🔴 Critical", critical_count, delta_color="inverse")
             with col3:
-                if fig_pages:
-                    st.plotly_chart(fig_pages, use_container_width=True)
+                st.metric("📄 Pages", summary.get('totalPages', 0))
+            with col4:
+                st.metric("✅ Success Rate", summary.get('successRate', '0%'))
             
-            # Violation breakdown
-            st.subheader("🚨 Violation Breakdown")
-            
-            # Filter options
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                severity_filter = st.selectbox(
-                    "Filter by Severity",
-                    ["All", "Critical", "High", "Medium", "Low"]
-                )
-            
-            with col2:
-                type_filter = st.selectbox(
-                    "Filter by Type",
-                    ["All"] + list(set([v.get('violationType', 'Unknown') for v in violations]))
-                )
-            
-            with col3:
-                page_filter = st.selectbox(
-                    "Filter by Page",
-                    ["All"] + sorted(list(set([str(v.get('pageNumber', 'Unknown')) for v in violations])))
-                )
-            
-            # Apply filters
-            filtered_violations = violations.copy()
-            
-            if severity_filter != "All":
-                filtered_violations = [v for v in filtered_violations if v.get('severity', '').lower() == severity_filter.lower()]
-            
-            if type_filter != "All":
-                filtered_violations = [v for v in filtered_violations if v.get('violationType') == type_filter]
-            
-            if page_filter != "All":
-                filtered_violations = [v for v in filtered_violations if str(v.get('pageNumber')) == page_filter]
-            
-            # Display violations
-            for i, violation in enumerate(filtered_violations):
-                severity = violation.get('severity', 'low')
-                violation_class = f"violation-{severity}"
+            if violations:
+                # Charts
+                st.subheader("📈 Violation Analytics")
+                fig_severity, fig_types = create_violation_charts(violations)
                 
-                with st.container():
-                    st.markdown(f"""
-                    <div class="{violation_class}">
-                        <h4>🚨 {violation.get('violationType', 'Unknown')} (Page {violation.get('pageNumber', 'N/A')})</h4>
-                        <p><strong>Severity:</strong> {severity.upper()}</p>
-                        <p><strong>Text:</strong> "{violation.get('violationText', 'N/A')}"</p>
-                        <p><strong>Issue:</strong> {violation.get('explanation', 'N/A')}</p>
-                        <p><strong>Action:</strong> {violation.get('suggestedAction', 'N/A')}</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    if st.button(f"Mark as Resolved", key=f"resolve_{i}"):
-                        st.success("✅ Violation marked as resolved!")
-            
-            # FIXED: Fast download system
-            st.subheader("📥 Download Reports")
-            
-            # Generate reports once when needed
-            if 'reports_ready' not in st.session_state:
-                st.session_state.reports_ready = False
-            
-            if not st.session_state.reports_ready:
-                if st.button("🔄 Generate Reports", type="primary"):
-                    with st.spinner("Generating reports..."):
-                        filename = st.session_state.current_analysis['filename']
-                        xlsx_data, pdf_data = generate_quick_reports(violations, filename)
-                        
-                        st.session_state.xlsx_report = xlsx_data
-                        st.session_state.pdf_report = pdf_data
-                        st.session_state.report_filename = filename
-                        st.session_state.reports_ready = True
-                        
-                    st.success("✅ Reports generated!")
-                    st.rerun()
-            else:
-                # Show download buttons
-                col1, col2, col3 = st.columns(3)
-                
-                filename = st.session_state.report_filename
-                
+                col1, col2 = st.columns(2)
                 with col1:
-                    st.download_button(
-                        label="📊 Download XLSX Report",
-                        data=st.session_state.xlsx_report,
-                        file_name=f"{filename}_analysis.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
+                    if fig_severity:
+                        st.plotly_chart(fig_severity, use_container_width=True)
                 
                 with col2:
-                    st.download_button(
-                        label="📄 Download PDF Report",
-                        data=st.session_state.pdf_report,
-                        file_name=f"{filename}_report.pdf",
-                        mime="application/pdf",
-                        use_container_width=True
-                    )
+                    if fig_types:
+                        st.plotly_chart(fig_types, use_container_width=True)
                 
-                with col3:
-                    if st.button("🔄 Regenerate"):
-                        st.session_state.reports_ready = False
-                        st.rerun()
-
-def tab_online_editor():
-    """Tab 2: Online Editor - FIXED with real analysis"""
-    st.header("✏️ Online Editor")
-    
-    # Upload options
-    st.subheader("📂 Input Options")
-    
-    tab1, tab2, tab3 = st.tabs(["📄 Upload DOC/PDF", "📝 Paste Text", "📋 Load Previous"])
-    
-    with tab1:
-        uploaded_file = st.file_uploader(
-            "Upload Document",
-            type=['doc', 'docx', 'pdf'],
-            help="Upload DOC, DOCX, or PDF files"
-        )
-        
-        if uploaded_file:
-            st.info(f"📄 Loaded: {uploaded_file.name}")
-            if st.button("🔍 Analyze Uploaded File"):
-                # Process uploaded file here
-                st.info("File analysis feature coming soon!")
-    
-    with tab2:
-        text_input = st.text_area(
-            "Paste Script Text",
-            height=200,
-            placeholder="Paste your script content here..."
-        )
-        
-        if text_input and st.button("🔍 Analyze Text", type="primary"):
-            # FIXED: Use your original analysis system
-            with st.spinner("Analyzing text for S&P violations..."):
-                try:
-                    # Save text as temp file and analyze with your system
-                    temp_filename = "pasted_text.txt"
-                    with open(temp_filename, "w", encoding='utf-8') as f:
-                        f.write(text_input)
-                    
-                    # Mock pages data for text analysis
-                    pages_data = [{"text": text_input, "page": 1}]
-                    
-                    # Use your original analysis function
-                    analysis = analyze_document_robust(text_input, pages_data, OPENAI_API_KEY)
-                    
-                    st.session_state.editor_text = text_input
-                    st.session_state.editor_analysis = analysis
-                    
-                    violations = analysis.get('violations', [])
-                    if violations:
-                        st.success(f"✅ Found {len(violations)} violations")
-                    else:
-                        st.success("✅ No violations found")
-                    
-                    if os.path.exists(temp_filename):
-                        os.remove(temp_filename)
-                        
-                except Exception as e:
-                    st.error(f"Analysis failed: {str(e)}")
-    
-    with tab3:
-        if 'current_analysis' in st.session_state:
-            if st.button("📋 Load Current Analysis"):
-                st.session_state.editor_text = st.session_state.current_analysis['text']
-                st.session_state.editor_analysis = st.session_state.current_analysis['analysis']
-                st.success("✅ Previous analysis loaded!")
-    
-    # FIXED: Two-column editor with real highlighting
-    if 'editor_text' in st.session_state:
-        st.divider()
-        
-        col1, col2 = st.columns([3, 2])
-        
-        with col1:
-            st.subheader("📝 Text with Violation Highlights")
-            
-            text = st.session_state.editor_text
-            analysis = st.session_state.get('editor_analysis', {})
-            violations = analysis.get('violations', [])
-            
-            # FIXED: Real highlighting based on your violations
-            highlighted_text = text
-            
-            if violations:
-                # Apply highlighting for each violation
-                for violation in violations:
-                    violation_text = violation.get('violationText', '')
+                # Filters
+                st.subheader("🔍 Filter Violations")
+                col1, col2 = st.columns(2)
+                with col1:
+                    severity_filter = st.selectbox("Severity", ["All", "Critical", "High", "Medium", "Low"])
+                with col2:
+                    type_filter = st.selectbox("Type", ["All"] + list(set([v.get('violationType', 'Unknown') for v in violations])))
+                
+                # Apply filters
+                filtered_violations = violations.copy()
+                if severity_filter != "All":
+                    filtered_violations = [v for v in filtered_violations if v.get('severity', '').lower() == severity_filter.lower()]
+                if type_filter != "All":
+                    filtered_violations = [v for v in filtered_violations if v.get('violationType') == type_filter]
+                
+                # Display violations
+                st.subheader(f"🚨 Violations ({len(filtered_violations)} shown)")
+                
+                for i, violation in enumerate(filtered_violations):
                     severity = violation.get('severity', 'low')
                     
-                    if violation_text and violation_text in highlighted_text:
-                        color_map = {
-                            'critical': '#ffcdd2',
-                            'high': '#fff3e0', 
-                            'medium': '#fffde7',
-                            'low': '#f3e5f5'
-                        }
-                        
-                        bg_color = color_map.get(severity, '#f3e5f5')
-                        
-                        highlighted_text = highlighted_text.replace(
-                            violation_text,
-                            f'<span style="background-color: {bg_color}; padding: 2px 4px; border-radius: 3px; font-weight: bold;" title="{violation.get("explanation", "")}">{violation_text}</span>'
-                        )
-            
-            # Display highlighted text
-            st.markdown(
-                f'<div style="background-color: #fafafa; padding: 15px; border-radius: 8px; border: 1px solid #e0e0e0; max-height: 400px; overflow-y: auto;">{highlighted_text.replace(chr(10), "<br>")}</div>',
-                unsafe_allow_html=True
-            )
-            
-            # Legend
-            if violations:
-                st.markdown("""
-                **🎨 Violation Severity Legend:**
-                - <span style="background-color: #ffcdd2; padding: 2px 4px; border-radius: 3px;">🔴 Critical</span>
-                - <span style="background-color: #fff3e0; padding: 2px 4px; border-radius: 3px;">🟠 High</span>  
-                - <span style="background-color: #fffde7; padding: 2px 4px; border-radius: 3px;">🟡 Medium</span>
-                - <span style="background-color: #f3e5f5; padding: 2px 4px; border-radius: 3px;">🟣 Low</span>
-                """, unsafe_allow_html=True)
-            
-        with col2:
-            st.subheader("🔍 Violation Details")
-            
-            if 'editor_analysis' in st.session_state:
-                violations = st.session_state.editor_analysis.get('violations', [])
-                
-                if violations:
-                    # Quick stats
-                    critical = len([v for v in violations if v['severity'] == 'critical'])
-                    high = len([v for v in violations if v['severity'] == 'high'])
-                    medium = len([v for v in violations if v['severity'] == 'medium'])
-                    low = len([v for v in violations if v['severity'] == 'low'])
+                    # Color-coded display
+                    if severity == 'critical':
+                        st.error(f"🔴 **{violation.get('violationType', 'Unknown')}** (Page {violation.get('pageNumber', 'N/A')})")
+                    elif severity == 'high':
+                        st.warning(f"🟠 **{violation.get('violationType', 'Unknown')}** (Page {violation.get('pageNumber', 'N/A')})")
+                    elif severity == 'medium':
+                        st.info(f"🟡 **{violation.get('violationType', 'Unknown')}** (Page {violation.get('pageNumber', 'N/A')})")
+                    else:
+                        st.success(f"🟢 **{violation.get('violationType', 'Unknown')}** (Page {violation.get('pageNumber', 'N/A')})")
                     
-                    col_a, col_b = st.columns(2)
-                    with col_a:
-                        st.metric("🔴 Critical", critical)
-                        st.metric("🟠 High", high)
-                    with col_b:
-                        st.metric("🟡 Medium", medium)
-                        st.metric("🟣 Low", low)
-                    
+                    st.write(f"**Text:** \"{violation.get('violationText', 'N/A')}\"")
+                    st.write(f"**Issue:** {violation.get('explanation', 'N/A')}")
+                    st.write(f"**Action:** {violation.get('suggestedAction', 'N/A')}")
                     st.divider()
-                    
-                    # Violation list
-                    for i, violation in enumerate(violations):
-                        severity = violation.get('severity', 'low')
-                        severity_icons = {'critical': '🔴', 'high': '🟠', 'medium': '🟡', 'low': '🟣'}
-                        
-                        with st.expander(f"{severity_icons.get(severity, '⚪')} {violation.get('violationType', 'Unknown')}"):
-                            st.markdown(f"**Text:** {violation.get('violationText', 'N/A')}")
-                            st.markdown(f"**Issue:** {violation.get('explanation', 'N/A')}")
-                            st.markdown(f"**Suggestion:** {violation.get('suggestedAction', 'N/A')}")
-                            
-                            st.text_area("💡 Your Fix", placeholder="Write your fix here...", key=f"fix_{i}")
-                            
-                            col_a, col_b = st.columns(2)
-                            with col_a:
-                                st.button("✅ Apply Fix", type="primary", key=f"apply_{i}")
-                            with col_b:
-                                st.button("⏭️ Skip", key=f"skip_{i}")
-                else:
-                    st.success("✅ No violations detected!")
-            else:
-                st.info("Analyze text to see violation details")
-
-def tab_scene_navigator():
-    """Tab 3: Scene Navigator & Comment System"""
-    st.header("🎬 Scene Navigator & Comments")
-    
-    # Load text for scene extraction
-    text = ""
-    if 'current_analysis' in st.session_state:
-        text = st.session_state.current_analysis['text']
-    elif 'editor_text' in st.session_state:
-        text = st.session_state.editor_text
-    else:
-        st.info("📄 Please upload a script in Tab 1 or Tab 2 to use the Scene Navigator")
-        return
-    
-    # Extract scenes
-    scenes = extract_scenes(text)
-    
-    if not scenes:
-        st.warning("🎬 No scenes detected. Make sure your script uses standard INT./EXT. scene headers.")
-        return
-    
-    st.success(f"🎬 Found {len(scenes)} scenes")
-    
-    # Scene navigation
-    col1, col2 = st.columns([1, 3])
-    
-    with col1:
-        st.subheader("📋 Scene List")
-        
-        selected_scene_idx = st.selectbox(
-            "Select Scene",
-            range(len(scenes)),
-            format_func=lambda x: f"Scene {x+1}: {scenes[x]['location']}"
-        )
-        
-        # Scene info
-        scene = scenes[selected_scene_idx]
-        st.markdown(f"""
-        **📍 Location:** {scene['location']}  
-        **🌅 Time:** {scene['time']}  
-        **📄 Lines:** {scene['start_line']}-{scene['end_line']}
-        """)
-        
-        # Quick stats
-        total_comments = len(load_comments_data().get(f"script_{hash(text)}", {}).get(f"scene_{selected_scene_idx}", []))
-        unresolved_comments = len([c for c in load_comments_data().get(f"script_{hash(text)}", {}).get(f"scene_{selected_scene_idx}", []) if not c.get('resolved', False)])
-        
-        st.metric("💬 Comments", total_comments)
-        st.metric("⚠️ Unresolved", unresolved_comments)
-    
-    with col2:
-        st.subheader(f"🎬 {scene['header']}")
-        
-        # Scene content
-        with st.container():
-            st.markdown(f"""
-            <div class="scene-header">
-                {scene['header']}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Display scene content with line numbers
-            content_lines = scene['content'].split('\n')[1:]  # Skip header
-            for i, line in enumerate(content_lines):
-                if line.strip():
-                    st.text(f"{scene['start_line'] + i + 1:3d}: {line}")
-        
-        st.divider()
-        
-        # Comments section
-        st.subheader("💬 Comments & Discussions")
-        
-        # Add new comment
-        with st.expander("➕ Add New Comment"):
-            comment_type = st.selectbox("Comment Type", ["General", "S&P Issue", "Creative Note", "Legal", "Technical"])
-            comment_text = st.text_area("Comment", placeholder="Add your comment here...")
-            
-            col_a, col_b, col_c = st.columns(3)
-            with col_a:
-                priority = st.selectbox("Priority", ["Low", "Medium", "High", "Critical"])
-            with col_b:
-                tag = st.text_input("Tag", placeholder="e.g., violence, dialogue")
-            with col_c:
-                assign_to = st.text_input("Assign to", placeholder="email@hoichoi.tv")
-            
-            if st.button("💬 Add Comment", type="primary"):
-                if comment_text:
-                    comment = {
-                        'type': comment_type,
-                        'text': comment_text,
-                        'priority': priority,
-                        'tag': tag,
-                        'assigned_to': assign_to,
-                        'resolved': False
-                    }
-                    
-                    script_id = f"script_{hash(text)}"
-                    scene_id = f"scene_{selected_scene_idx}"
-                    save_comment(script_id, scene_id, comment)
-                    
-                    st.success("✅ Comment added successfully!")
-                    st.rerun()
-        
-        # Display existing comments
-        script_id = f"script_{hash(text)}"
-        scene_id = f"scene_{selected_scene_idx}"
-        comments = load_comments_data().get(script_id, {}).get(scene_id, [])
-        
-        if comments:
-            for comment in comments:
-                comment_class = "resolved-comment" if comment.get('resolved') else "comment-box"
                 
-                with st.container():
-                    st.markdown(f"""
-                    <div class="{comment_class}">
-                        <strong>💬 {comment.get('type', 'General')}</strong> 
-                        <span style="color: #666;">by {comment.get('user', 'Unknown')} • {comment.get('timestamp', 'Unknown time')}</span>
-                        <br>
-                        <p>{comment.get('text', '')}</p>
-                        <small>🏷️ {comment.get('tag', 'No tag')} • 📌 {comment.get('priority', 'Low')} priority</small>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    if not comment.get('resolved', False):
-                        if st.button(f"✅ Mark Resolved", key=f"resolve_comment_{comment.get('id')}"):
-                            comment['resolved'] = True
-                            comment['resolved_by'] = st.session_state.user_email
-                            comment['resolved_at'] = datetime.now().isoformat()
-                            st.success("✅ Comment marked as resolved!")
-                            st.rerun()
-        else:
-            st.info("💬 No comments yet. Add the first comment above!")
-
-def admin_panel():
-    """Admin panel for user management"""
-    if not st.session_state.get('is_admin', False):
-        st.error("❌ Admin access required")
-        return
+                # Download report
+                st.subheader("📥 Download Report")
+                excel_data = generate_excel_report(violations, uploaded_file.name)
+                
+                if excel_data:
+                    st.download_button(
+                        label="📊 Download Excel Report",
+                        data=excel_data,
+                        file_name=f"{uploaded_file.name}_analysis.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                else:
+                    st.error("❌ Could not generate Excel report")
+            else:
+                st.success("🎉 No violations found! Content appears to comply with S&P standards.")
     
-    st.header("⚙️ Admin Panel")
-    
-    tab1, tab2, tab3 = st.tabs(["👥 Users", "📊 Analytics", "⚙️ Settings"])
-    
-    with tab1:
-        st.subheader("User Management")
-        
-        # Mock user data
-        users_data = [
-            {"Email": "john.doe@hoichoi.tv", "Role": "Reviewer", "Last Active": "2024-01-15", "Status": "Active"},
-            {"Email": "jane.smith@hoichoi.tv", "Role": "Creative", "Last Active": "2024-01-14", "Status": "Active"},
-            {"Email": "admin@hoichoi.tv", "Role": "Admin", "Last Active": "2024-01-15", "Status": "Active"},
-        ]
-        
-        df = pd.DataFrame(users_data)
-        st.dataframe(df, use_container_width=True)
-        
-        with st.expander("➕ Add New User"):
-            new_email = st.text_input("Email")
-            new_role = st.selectbox("Role", ["Reviewer", "Creative", "Admin"])
-            if st.button("Add User"):
-                st.success(f"✅ User {new_email} added as {new_role}")
-    
-    with tab2:
-        st.subheader("System Analytics")
-        
-        # Mock analytics data
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Total Scripts", "127", "+12")
-        with col2:
-            st.metric("Active Reviews", "23", "+5")
-        with col3:
-            st.metric("Resolved Issues", "89%", "+2%")
-        with col4:
-            st.metric("Avg. Processing", "3.2 min", "-0.5 min")
-        
-        # Mock charts
-        dates = pd.date_range(start='2024-01-01', end='2024-01-15', freq='D')
-        scripts_per_day = [5, 8, 12, 6, 9, 15, 11, 7, 13, 10, 8, 14, 9, 6, 11]
-        
-        fig = px.line(x=dates, y=scripts_per_day, title="Scripts Processed Per Day")
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with tab3:
-        st.subheader("System Settings")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.number_input("Max File Size (MB)", value=50, min_value=1, max_value=500)
-            st.selectbox("Default Severity Filter", ["All", "Critical", "High"])
-            st.checkbox("Enable Email Notifications", value=True)
-        
-        with col2:
-            st.number_input("Session Timeout (hours)", value=8, min_value=1, max_value=24)
-            st.selectbox("Default Report Format", ["PDF", "XLSX", "Both"])
-            st.checkbox("Auto-assign Reviews", value=False)
-        
-        if st.button("💾 Save Settings", type="primary"):
-            st.success("✅ Settings saved successfully!")
-
-# Main application
-def main():
-    # Authentication check
-    if not authenticate_user():
-        return
-    
-    # Sidebar
-    with st.sidebar:
-        st.markdown(f"""
-        <div style="text-align: center; padding: 1rem; background-color: #f0f0f0; border-radius: 10px; margin-bottom: 1rem;">
-            <h3>🎬 hoichoi S&P</h3>
-            <p>👋 Welcome, {st.session_state.user_email}</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Navigation
-        if st.session_state.get('is_admin', False):
-            page = st.selectbox(
-                "Navigate to:",
-                ["📝 Edit Own Script", "✏️ Online Editor", "🎬 Scene Navigator", "⚙️ Admin Panel"]
-            )
-        else:
-            page = st.selectbox(
-                "Navigate to:",
-                ["📝 Edit Own Script", "✏️ Online Editor", "🎬 Scene Navigator"]
-            )
-        
-        # Quick stats
-        st.divider()
-        st.subheader("📊 Quick Stats")
-        
-        if 'current_analysis' in st.session_state:
-            analysis = st.session_state.current_analysis['analysis']
-            violations = analysis.get('violations', [])
+    # Footer with violation rules
+    with st.expander("📋 S&P Violation Categories Reference"):
+        for rule_name, rule_data in VIOLATION_RULES.items():
+            severity = rule_data['severity']
+            if severity == 'critical':
+                st.error(f"🔴 **{rule_name.replace('_', ' ')}**")
+            elif severity == 'high':
+                st.warning(f"🟠 **{rule_name.replace('_', ' ')}**")
+            else:
+                st.info(f"🟡 **{rule_name.replace('_', ' ')}**")
             
-            critical_count = len([v for v in violations if v.get('severity') == 'critical'])
-            high_count = len([v for v in violations if v.get('severity') == 'high'])
-            
-            st.metric("🔴 Critical", critical_count)
-            st.metric("🟠 High", high_count)
-            st.metric("📄 Total Pages", analysis['summary']['totalPages'])
-        else:
-            st.info("Upload a script to see stats")
-        
-        # System status
-        st.divider()
-        st.subheader("🔧 System Status")
-        st.success("✅ AI Engine: Online")
-        st.success("✅ Report Generator: Ready")
-        st.success("✅ Database: Connected")
-        
-        # Logout
-        if st.button("🚪 Logout", use_container_width=True):
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
-            st.rerun()
-    
-    # Main header
-    st.markdown("""
-    <div class="main-header">
-        <h1>🎬 Standards & Practices Review System</h1>
-        <p>Streamlined S&P compliance for hoichoi creative content</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Route to appropriate page
-    if page == "📝 Edit Own Script":
-        tab_edit_own_script()
-    elif page == "✏️ Online Editor":
-        tab_online_editor()
-    elif page == "🎬 Scene Navigator":
-        tab_scene_navigator()
-    elif page == "⚙️ Admin Panel":
-        admin_panel()
+            st.write(rule_data['description'])
+            st.write(f"**Keywords:** {', '.join(rule_data['keywords'])}")
+            st.divider()
 
 if __name__ == "__main__":
     main()
