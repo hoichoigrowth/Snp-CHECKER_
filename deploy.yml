@@ -41,26 +41,27 @@ jobs:
     - name: Create secrets file
       env:
         OPENAI_API_KEY: ${{ secrets.OPEN_AI }}
-        DEEPSEEK_API_KEY: ${{ secrets.OPEN_AI }}
+        OPEN_AI: ${{ secrets.OPEN_AI }}
       run: |
         echo "OPENAI_API_KEY=$OPENAI_API_KEY" >> .env
-        echo "DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY" >> .env
+        echo "OPEN_AI=$OPEN_AI" >> .env
     
     - name: Test import modules
       env:
         OPENAI_API_KEY: ${{ secrets.OPEN_AI }}
-        DEEPSEEK_API_KEY: ${{ secrets.OPEN_AI }}
+        OPEN_AI: ${{ secrets.OPEN_AI }}
       run: |
         python -c "import streamlit; print('✅ Streamlit OK')"
         python -c "import pandas; print('✅ Pandas OK')"
         python -c "import plotly.express; print('✅ Plotly OK')"
         python -c "import plotly.graph_objects; print('✅ Plotly Graph Objects OK')"
+        python -c "import os; print('✅ API Key:', os.getenv('OPENAI_API_KEY', 'Not found')[:8] + '...' if os.getenv('OPENAI_API_KEY') else 'Not found')"
         python -c "print('✅ All modules imported successfully')"
     
     - name: Run Streamlit App (Test)
       env:
         OPENAI_API_KEY: ${{ secrets.OPEN_AI }}
-        DEEPSEEK_API_KEY: ${{ secrets.OPEN_AI }}
+        OPEN_AI: ${{ secrets.OPEN_AI }}
       run: |
         echo "Testing Streamlit app startup..."
         timeout 30s streamlit run main.py --server.headless true --server.port 8501 || echo "App test completed"
